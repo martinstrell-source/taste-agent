@@ -1,0 +1,8 @@
+# secrets and personal data never go in the repo
+.env
+data/
+*.db
+*.csv
+.venv*/
+__pycache__/
+.DS_Store
