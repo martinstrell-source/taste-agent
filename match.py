@@ -18,8 +18,8 @@ Backtest: candidates already on the user's lists, and ones they said they loved,
 along with the rest. A useful matcher ranks them high. (Mild leakage: those places also feed
 the profile.)
 
-  python match.py --user alex                 # rank, backtest, write data/picks/<user>.json
-  python match.py --user alex --explain 10    # also have Claude write a one-line reason for the top 10
+  python match.py --user martin                 # rank, backtest, write data/picks/<user>.json
+  python match.py --user martin --explain 10    # also have Claude write a one-line reason for the top 10
 
 Google rating and review count are fetched for the top picks only (--ratings, default 15) and
 cached for 30 days. They are Enterprise-tier fields: 1,000 free a month, so ~15 a week is free.
@@ -31,8 +31,8 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-from common import connect, ensure_schema, get_user, norm
-from profile import FORMAT_OF, NOT_CUISINE, PROFILE_DIR, TITLE_CUISINE, norm_cuisine
+from common import connect, ensure_schema, get_user, lat_sql, lng_sql, norm
+from profile import FORMAT_OF, NOT_CUISINE, TITLE_CUISINE, norm_cuisine
 from s2decode import haversine_m
 
 ROOT = Path(__file__).parent
@@ -116,8 +116,14 @@ def place_features(cats, cuisine, name, known=()):
 MOVING = re.compile(r"\b(relocating|will relocate|to relocate|is moving|will move|moving to)\b", re.I)
 
 
-def load_profile(user_id, path=None):
-    return json.loads(Path(path or PROFILE_DIR / f"{user_id}.json").read_text())
+def load_profile(con, user, path=None):
+    """The user's taste profile from Supabase (written by profile.py), or from a JSON file if a path is given."""
+    if path:
+        return json.loads(Path(path).read_text())
+    row = con.execute("SELECT profile FROM user_profiles WHERE user_id=%s", (user["uid"],)).fetchone()
+    if not row:
+        raise SystemExit(f"No taste profile for {user['user_id']} yet. Run: python profile.py --user {user['user_id']}")
+    return row[0]
 
 
 PRICE = {"PRICE_LEVEL_INEXPENSIVE": "$", "PRICE_LEVEL_MODERATE": "$$", "PRICE_LEVEL_EXPENSIVE": "$$$",
@@ -144,14 +150,17 @@ def add_ratings(con, picks):
     calls = 0
     for p in picks:
         row = con.execute("SELECT rating, user_rating_count, price_level FROM place_ratings "
-                          "WHERE google_place_id=? AND fetched_at > datetime('now', '-30 days')",
+                          "WHERE google_place_id=%s AND fetched_at > now() - interval '30 days'",
                           (p["google_place_id"],)).fetchone()
         if row is None:
             try:
                 row = fetch_rating(p["google_place_id"])
                 calls += 1
-                con.execute("INSERT OR REPLACE INTO place_ratings (google_place_id, rating, user_rating_count, "
-                            "price_level) VALUES (?,?,?,?)", (p["google_place_id"], *row))
+                con.execute("""INSERT INTO place_ratings (google_place_id, rating, user_rating_count, price_level,
+                               fetched_at) VALUES (%s,%s,%s,%s,now())
+                               ON CONFLICT (google_place_id) DO UPDATE SET rating=excluded.rating,
+                               user_rating_count=excluded.user_rating_count, price_level=excluded.price_level,
+                               fetched_at=excluded.fetched_at""", (p["google_place_id"], *row))
                 con.commit()
             except Exception as e:  # noqa: BLE001 - a missing rating should not stop the run
                 print(f"  rating lookup failed for {p['name']}: {e}")
@@ -195,7 +204,7 @@ def neighborhood(address):
 
 def rank_places(con, user, prof):
     """Score every usable candidate for this user. Returns a list sorted best first."""
-    user_id = user["user_id"]
+    user_id, uid = user["user_id"], user["uid"]
     home = user["home"]
     # shares among tagged places, so they compare with the typical-diner estimates
     c_total = sum(v["count"] for v in prof["cuisines"].values()) or 1
@@ -217,21 +226,24 @@ def rank_places(con, user, prof):
     dis_formats = set(dislikes.get("formats", []))
     dis_dish_tokens = [tokens(d) for d in dislikes.get("dishes", [])]
 
-    rows = con.execute("""
-        SELECT google_place_id, google_name, address, lat, lng, categories, cuisine, dishes,
+    rows = con.execute(f"""
+        SELECT google_place_id, google_name, address, {lat_sql('location')}, {lng_sql('location')},
+               array_to_string(categories, ','), cuisine, dishes::text,
                mention_type, source, what_it_says, item_title, item_link, maps_uri, coalesce(tone, 'neutral'),
                location_hint
         FROM candidates
-        WHERE is_food = 1 AND in_bay_area = 1 AND google_place_id IS NOT NULL
+        WHERE is_food AND in_bay_area AND google_place_id IS NOT NULL
           AND coalesce(business_status, 'OPERATIONAL') = 'OPERATIONAL'
           AND mention_type NOT IN ('closing', 'passing') AND match_confidence <> 'weak'
+        ORDER BY id
     """).fetchall()
     # what this user already knows: their saved places (by Google id, or same name within 300 m)
     saved_ids = {r[0] for r in con.execute(
-        "SELECT google_place_id FROM places WHERE user_id=? AND google_place_id IS NOT NULL", (user_id,))}
+        "SELECT google_place_id FROM places WHERE user_id=%s AND google_place_id IS NOT NULL", (uid,))}
     saved_named = [(norm(t), norm(g or ""), la, ln) for t, g, la, ln in con.execute(
-        "SELECT title, google_name, lat, lng FROM places WHERE user_id=? AND lat IS NOT NULL", (user_id,))]
-    reacted = dict(con.execute("SELECT google_place_id, reaction FROM feedback WHERE user_id=?", (user_id,)))
+        f"SELECT title, google_name, {lat_sql('location')}, {lng_sql('location')} FROM places "
+        "WHERE user_id=%s AND location IS NOT NULL", (uid,))]
+    reacted = dict(con.execute("SELECT google_place_id, reaction FROM feedback WHERE user_id=%s", (uid,)).fetchall())
 
     def known_status(gid, name, lat, lng):
         if gid in reacted:
@@ -311,18 +323,17 @@ def rank_places(con, user, prof):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--user", required=True)
-    ap.add_argument("--db")
-    ap.add_argument("--profile")
+    ap.add_argument("--profile", help="read the taste profile from this JSON file instead of Supabase")
     ap.add_argument("--explain", type=int, default=0, help="Claude writes reasons for the top N")
     ap.add_argument("--show", type=int, default=15)
     ap.add_argument("--out")
     ap.add_argument("--ratings", type=int, default=15, help="fetch Google rating for the top N picks (0 = off)")
     args = ap.parse_args()
 
-    con = connect(args.db)
+    con = connect()
     ensure_schema(con)
     user = get_user(con, args.user)
-    prof = load_profile(args.user, args.profile)
+    prof = load_profile(con, user, args.profile)
     ranked = rank_places(con, user, prof)
 
     # backtest: places the user saved or loved should rank high; meh/no should rank low

@@ -9,7 +9,7 @@
 Candidates are shared by all users. Whether a place is already on a given user's lists is
 worked out per user in match.py.
 
-Results go to tables feed_items and candidates in data/taste.db.
+Results go to tables feed_items and candidates in Supabase.
 
   python fetch_sources.py --limit-items 5     # small test
   python fetch_sources.py                     # items from the last 14 days
@@ -23,7 +23,6 @@ import html
 import json
 import os
 import re
-import sqlite3
 import sys
 import time
 import urllib.request
@@ -32,7 +31,7 @@ from pathlib import Path
 import anthropic
 import feedparser
 
-from common import SSL_CTX, connect, ensure_schema, is_food_types, load_env, name_similarity
+from common import SSL_CTX, cats_list, connect, ensure_schema, is_food_types, jsonb, load_env, name_similarity
 from s2decode import haversine_m
 
 ROOT = Path(__file__).parent
@@ -53,23 +52,6 @@ BAY_CENTER = (37.7749, -122.2700)   # between SF and Oakland
 BAY_RADIUS_M = 50000.0              # API maximum for locationBias
 BAY_MAX_KM = 120                    # farther than this from center = not Bay Area
 UA = "Mozilla/5.0 (Macintosh; TasteAgent prototype)"
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS feed_items (
-    item_id TEXT PRIMARY KEY, source TEXT, title TEXT, link TEXT, published TEXT,
-    fetched_at TEXT, n_places INTEGER, status TEXT, text_len INTEGER, text TEXT
-);
-CREATE TABLE IF NOT EXISTS candidates (
-    id INTEGER PRIMARY KEY,
-    item_id TEXT, source TEXT, item_title TEXT, item_link TEXT, published TEXT,
-    name TEXT, location_hint TEXT, mention_type TEXT, cuisine TEXT, dishes TEXT, what_it_says TEXT,
-    google_place_id TEXT, google_name TEXT, address TEXT, lat REAL, lng REAL, categories TEXT,
-    primary_type TEXT, business_status TEXT, maps_uri TEXT, name_similarity REAL,
-    match_confidence TEXT, is_food INTEGER, in_bay_area INTEGER, already_saved INTEGER,
-    created_at TEXT, tone TEXT,
-    UNIQUE (item_id, name)
-);
-"""
 
 SYSTEM = """You read one article or post from a San Francisco Bay Area food publication. List every specific restaurant, cafe, bakery, bar, shop or other food or drink business it names.
 
@@ -285,7 +267,6 @@ def fetch_newsletters(days):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db")
     ap.add_argument("--days", type=int, default=14)
     ap.add_argument("--limit-items", type=int, default=0, help="stop after N new items (testing)")
     ap.add_argument("--model", default=DEFAULT_MODEL)
@@ -297,14 +278,9 @@ def main():
         if not os.environ.get(k):
             sys.exit(f"{k} not set (put it in .env)")
 
-    con = connect(args.db)
+    con = connect()
     ensure_schema(con)
-    con.executescript(SCHEMA)
-    have = {r[1] for r in con.execute("PRAGMA table_info(feed_items)")}
-    for col in ("text_len INTEGER", "text TEXT"):
-        if col.split()[0] not in have:
-            con.execute(f"ALTER TABLE feed_items ADD COLUMN {col}")
-    done = set() if args.redo else {r[0] for r in con.execute("SELECT item_id FROM feed_items")}
+    done = set() if args.redo else {r[0] for r in con.execute("SELECT item_id FROM feed_items WHERE status = 'done'")}
     client = anthropic.Anthropic()
     cutoff = time.time() - args.days * 86400
 
@@ -351,7 +327,14 @@ def main():
             print(f"  extraction error on {title!r}: {ex}")
             continue
 
-        con.execute("DELETE FROM candidates WHERE item_id = ?", (item_id,))
+        # the item row comes first: candidates point to it
+        con.execute("""INSERT INTO feed_items (item_id, source, title, link, published, fetched_at, n_places,
+                       status, text_len, text) VALUES (%s,%s,%s,%s,%s,now(),%s,'processing',%s,%s)
+                       ON CONFLICT (item_id) DO UPDATE SET source=excluded.source, title=excluded.title,
+                       link=excluded.link, published=excluded.published, fetched_at=excluded.fetched_at,
+                       status=excluded.status, text_len=excluded.text_len, text=excluded.text""",
+                    (item_id, source, title, link, published or None, len(places), len(text), text))
+        con.execute("DELETE FROM candidates WHERE item_id = %s", (item_id,))
         for p in places:
             row = dict(google_place_id=None, google_name=None, address=None, lat=None, lng=None,
                        categories=None, primary_type=None, business_status=None, maps_uri=None,
@@ -370,35 +353,43 @@ def main():
                 types = g.get("types", [])
                 row.update(
                     google_place_id=g.get("id"), google_name=g.get("displayName", {}).get("text", ""),
-                    address=g.get("formattedAddress"), lat=lat, lng=lng, categories=",".join(types),
+                    address=g.get("formattedAddress"), lat=lat, lng=lng, categories=cats_list(types),
                     primary_type=g.get("primaryType"), business_status=g.get("businessStatus"),
                     maps_uri=g.get("googleMapsUri"), name_similarity=round(sim, 3), match_confidence=conf,
-                    is_food=1 if is_food_types(types) else 0,
-                    in_bay_area=int(lat is not None and haversine_m(lat, lng, *BAY_CENTER) <= BAY_MAX_KM * 1000),
+                    is_food=is_food_types(types),
+                    in_bay_area=lat is not None and haversine_m(lat, lng, *BAY_CENTER) <= BAY_MAX_KM * 1000,
                 )
             con.execute(
-                """INSERT OR REPLACE INTO candidates
+                """INSERT INTO candidates
                    (item_id, source, item_title, item_link, published, name, location_hint, mention_type,
-                    cuisine, dishes, what_it_says, google_place_id, google_name, address, lat, lng,
+                    cuisine, dishes, what_it_says, google_place_id, google_name, address, location,
                     categories, primary_type, business_status, maps_uri, name_similarity,
                     match_confidence, is_food, in_bay_area, tone, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))""",
-                (item_id, source, title, link, published, p["name"], p["location_hint"], p["mention_type"],
-                 p["cuisine"], json.dumps(p["dishes"]), p["what_it_says"], row["google_place_id"],
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,pt(%s, %s),%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
+                   ON CONFLICT (item_id, name) DO UPDATE SET
+                     source=excluded.source, item_title=excluded.item_title, item_link=excluded.item_link,
+                     published=excluded.published, location_hint=excluded.location_hint,
+                     mention_type=excluded.mention_type, cuisine=excluded.cuisine, dishes=excluded.dishes,
+                     what_it_says=excluded.what_it_says, google_place_id=excluded.google_place_id,
+                     google_name=excluded.google_name, address=excluded.address, location=excluded.location,
+                     categories=excluded.categories, primary_type=excluded.primary_type,
+                     business_status=excluded.business_status, maps_uri=excluded.maps_uri,
+                     name_similarity=excluded.name_similarity, match_confidence=excluded.match_confidence,
+                     is_food=excluded.is_food, in_bay_area=excluded.in_bay_area, tone=excluded.tone,
+                     created_at=excluded.created_at""",
+                (item_id, source, title, link, published or None, p["name"], p["location_hint"], p["mention_type"],
+                 p["cuisine"] or None, jsonb(p["dishes"]), p["what_it_says"], row["google_place_id"],
                  row["google_name"], row["address"], row["lat"], row["lng"], row["categories"],
                  row["primary_type"], row["business_status"], row["maps_uri"], row["name_similarity"],
                  row["match_confidence"], row["is_food"], row["in_bay_area"], p.get("tone", "neutral")))
             n_places += 1
-        con.execute("""INSERT OR REPLACE INTO feed_items
-                       (item_id, source, title, link, published, fetched_at, n_places, status, text_len, text)
-                       VALUES (?,?,?,?,?,datetime('now'),?,?,?,?)""",
-                    (item_id, source, title, link, published, len(places), "done", len(text), text))
+        con.execute("UPDATE feed_items SET n_places=%s, status='done' WHERE item_id=%s", (len(places), item_id))
         con.commit()
         print(f"  {source}: {title[:70]}  -> {len(places)} places" + ("  (full page)" if fetched_page else ""))
 
     print(f"\nitems processed: {len(new_items)}, places stored: {n_places}, "
           f"Google calls: {gcalls}, Claude tokens: {tin} in / {tout} out")
-    q = """SELECT count(*), count(DISTINCT CASE WHEN is_food=1 AND in_bay_area=1
+    q = """SELECT count(*), count(DISTINCT CASE WHEN is_food AND in_bay_area
                   AND coalesce(business_status,'OPERATIONAL')='OPERATIONAL'
                   AND mention_type NOT IN ('closing', 'passing') AND match_confidence<>'weak'
                   AND coalesce(tone,'neutral')<>'negative' THEN google_place_id END)

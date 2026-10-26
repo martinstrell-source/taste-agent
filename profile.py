@@ -14,15 +14,16 @@ Rules:
 - Saving the same place twice counts once.
 
 Usage:
-    python profile.py --user alex
-Writes data/profiles/<user>.json and prints a summary.
+    python profile.py --user martin
+    python profile.py --user martin --out data/profiles/martin.json   # also save a copy as a file
+Writes the profile to the user_profiles table in Supabase and prints a summary.
 """
 import argparse
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from common import connect, ensure_schema, get_user
+from common import connect, ensure_schema, get_user, json_param, lat_sql, lng_sql
 
 ROOT = Path(__file__).parent
 PROFILE_DIR = ROOT / "data" / "profiles"
@@ -120,39 +121,39 @@ def region(lat, lng):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--user", required=True)
-    ap.add_argument("--db")
-    ap.add_argument("--out")
+    ap.add_argument("--out", help="also write the profile to this JSON file")
     args = ap.parse_args()
 
-    con = connect(args.db)
+    con = connect()
     ensure_schema(con)
-    get_user(con, args.user)
-    rows = con.execute("""
-        SELECT p.place_id, p.title, p.google_place_id, p.categories, p.match_confidence,
-               p.lat, p.lng, e.dishes, e.cuisine, e.sources, e.kind, e.sentiment, e.reason, p.list_name
-        FROM places p LEFT JOIN note_extractions e ON e.user_id = p.user_id AND e.place_id = p.place_id
-        WHERE p.user_id = ? AND p.is_food = 1
-        ORDER BY CASE p.list_name WHEN 'favorites' THEN 0 WHEN 'want_to_go' THEN 1 ELSE 2 END
-    """, (args.user,)).fetchall()
+    uid = get_user(con, args.user)["uid"]
+    rows = con.execute(f"""
+        SELECT p.place_key, p.title, p.google_place_id, array_to_string(p.categories, ','), p.match_confidence,
+               {lat_sql('p.location')}, {lng_sql('p.location')}, e.dishes::text, e.cuisine, e.sources::text,
+               e.kind, e.sentiment, e.reason, p.list_name
+        FROM places p LEFT JOIN note_extractions e ON e.user_id = p.user_id AND e.place_key = p.place_key
+        WHERE p.user_id = %s AND p.is_food
+        ORDER BY CASE p.list_name WHEN 'favorites' THEN 0 WHEN 'want_to_go' THEN 1 ELSE 2 END, p.id
+    """, (uid,)).fetchall()
     # places the user reacted to (usually earlier picks): use the feed candidate's data
-    fb = con.execute("""
+    fb = con.execute(f"""
         SELECT f.google_place_id, f.name, f.reaction, c.categories, c.cuisine, c.dishes, c.lat, c.lng
         FROM feedback f
-        LEFT JOIN (SELECT google_place_id, max(categories) categories, max(cuisine) cuisine,
-                          max(dishes) dishes, max(lat) lat, max(lng) lng
+        LEFT JOIN (SELECT google_place_id, max(array_to_string(categories, ',')) categories,
+                          max(cuisine) cuisine, max(dishes::text) dishes,
+                          max({lat_sql('location')}) lat, max({lng_sql('location')}) lng
                    FROM candidates GROUP BY google_place_id) c USING (google_place_id)
-        WHERE f.user_id = ?
-    """, (args.user,)).fetchall()
-    con.close()
+        WHERE f.user_id = %s
+        ORDER BY f.created_at
+    """, (uid,)).fetchall()
     for gid, name, reaction, cats, cuisine, dishes_j, lat, lng in fb:
         if reaction in ("love", "want"):
             rows.append((None, name, gid, cats, "good", lat, lng, dishes_j, cuisine, None, None, None, None,
                          reaction))
     avoid = [{"google_place_id": gid, "name": name, "reaction": reaction, "categories": cats, "cuisine": cuisine}
              for gid, name, reaction, cats, cuisine, *_ in fb if reaction in ("meh", "no")]
-    con2 = connect(args.db)
-    prefs = con2.execute("SELECT kind, value FROM user_prefs WHERE user_id=?", (args.user,)).fetchall()
-    con2.close()
+    prefs = con.execute("SELECT kind, value FROM user_prefs WHERE user_id=%s ORDER BY created_at, kind, value",
+                        (uid,)).fetchall()
 
     seen = set()
     formats, cuisines, dishes = Counter(), Counter(), Counter()
@@ -250,9 +251,15 @@ def main():
         "stated_cuisines": sorted({norm_cuisine(v) for k, v in prefs if k == "cuisine"}),
         "n_stated": len(prefs),
     }
-    out = Path(args.out) if args.out else PROFILE_DIR / f"{args.user}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(profile, indent=2, ensure_ascii=False))
+    con.execute("""INSERT INTO user_profiles (user_id, profile, updated_at) VALUES (%s, %s, now())
+                   ON CONFLICT (user_id) DO UPDATE SET profile = excluded.profile, updated_at = now()""",
+                (uid, json_param(profile)))
+    con.commit()
+    con.close()
+    if args.out:
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(profile, indent=2, ensure_ascii=False))
 
     print(f"Food and drink places (weighted; favorites and loved places count double): {n:.0f} "
           f"({n_noted} with notes)\n")
@@ -279,7 +286,7 @@ def main():
         print("\nSaid meh/no to:", ", ".join(a["name"] for a in avoid))
     if any(dislikes.values()):
         print("Dislikes:", {k: v for k, v in dislikes.items() if v})
-    print(f"\nwrote {out}")
+    print("\nsaved to Supabase (user_profiles)" + (f" and {args.out}" if args.out else ""))
 
 
 if __name__ == "__main__":

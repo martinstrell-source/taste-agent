@@ -7,8 +7,9 @@ Claude turns that into structure; favorite places are matched on Google near the
 as favorites; the rest goes into user_prefs. profile.py, match.py and digest.py then work as usual.
 A Takeout import can be added later and merges with this.
 
-  python onboard.py --user dana --name Dana --text "I live in Berkeley. Love Burma Superstar, ..."
-  python onboard.py --user dana --file dana.txt
+  python onboard.py --user dana --name Dana --email dana@example.com --text "I live in Berkeley. Love Burma Superstar, ..."
+  python onboard.py --user dana --email dana@example.com --file dana.txt
+A new user needs --email: it becomes their Supabase sign-in account.
 """
 import argparse
 import json
@@ -18,7 +19,7 @@ import time
 
 import anthropic
 
-from common import connect, ensure_schema, is_food_types, load_env
+from common import cats_list, connect, ensure_schema, is_food_types, load_env, upsert_user
 from enrich import pick, search
 
 MODEL = "claude-sonnet-5-5"
@@ -95,7 +96,6 @@ def main():
     g.add_argument("--text")
     g.add_argument("--file")
     ap.add_argument("--home", help="LAT,LNG (otherwise taken from what they wrote)")
-    ap.add_argument("--db")
     args = ap.parse_args()
 
     load_env()
@@ -104,8 +104,10 @@ def main():
             sys.exit(f"{k} not set (put it in .env)")
     text = args.text if args.text else open(args.file, encoding="utf-8").read()
 
-    con = connect(args.db)
+    con = connect()
     ensure_schema(con)
+    if not args.email and not con.execute("SELECT 1 FROM app_users WHERE handle=%s", (args.user,)).fetchone():
+        sys.exit(f"New user '{args.user}' needs --email (it becomes their sign-in account).")
     taste = parse_taste(text)
 
     home, label = None, taste.get("home_area") or ""
@@ -113,15 +115,7 @@ def main():
         home = tuple(float(x) for x in args.home.split(","))
     elif label:
         home = geocode(label)
-    existing = con.execute("SELECT 1 FROM users WHERE user_id=?", (args.user,)).fetchone()
-    if existing:
-        if home:
-            con.execute("UPDATE users SET home_lat=?, home_lng=?, home_label=? WHERE user_id=?",
-                        (home[0], home[1], label, args.user))
-    else:
-        con.execute("INSERT INTO users (user_id, display_name, home_lat, home_lng, home_label, email) "
-                    "VALUES (?,?,?,?,?,?)", (args.user, args.name, home[0] if home else None,
-                                             home[1] if home else None, label, args.email))
+    uid = upsert_user(con, args.user, args.email, args.name, home, label)
 
     # favorite places -> places table as favorites, matched near home
     matched, unmatched = [], []
@@ -140,12 +134,19 @@ def main():
         types = g.get("types", [])
         loc = g["location"]
         con.execute(
-            """INSERT OR REPLACE INTO places (user_id, list_name, place_id, title, note, lat, lng, categories,
+            """INSERT INTO places (user_id, list_name, added_via, place_key, title, location, categories,
                google_place_id, google_name, address, name_similarity, match_distance_m, match_confidence,
-               is_food, enrich_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (args.user, "favorites", "onboard:" + g["id"], pl["name"], "", loc["latitude"], loc["longitude"],
-             ",".join(types), g["id"], g.get("displayName", {}).get("text", ""), g.get("formattedAddress"),
-             round(sim, 3), round(dist) if dist is not None else None, conf, 1 if is_food_types(types) else 0, 2))
+               is_food, enrich_version)
+               VALUES (%s,'favorites','onboard',%s,%s,pt(%s, %s),%s,%s,%s,%s,%s,%s,%s,%s,2)
+               ON CONFLICT (user_id, place_key) DO UPDATE SET list_name=excluded.list_name,
+                 title=excluded.title, location=excluded.location, categories=excluded.categories,
+                 google_place_id=excluded.google_place_id, google_name=excluded.google_name,
+                 address=excluded.address, name_similarity=excluded.name_similarity,
+                 match_distance_m=excluded.match_distance_m, match_confidence=excluded.match_confidence,
+                 is_food=excluded.is_food, enrich_version=excluded.enrich_version""",
+            (uid, "onboard:" + g["id"], pl["name"], loc["latitude"], loc["longitude"], cats_list(types),
+             g["id"], g.get("displayName", {}).get("text", ""), g.get("formattedAddress"),
+             round(sim, 3), round(dist) if dist is not None else None, conf, is_food_types(types)))
         matched.append(f"{g.get('displayName', {}).get('text', '')} ({g.get('formattedAddress', '')})")
 
     rows = [("cuisine", c) for c in taste["cuisines"]] + [("dish", d) for d in taste["dishes"]]
@@ -154,9 +155,11 @@ def main():
     d = taste["dislikes"]
     rows += [("dislike_cuisine", x) for x in d.get("cuisines", [])] + [("dislike_dish", x) for x in d.get("dishes", [])]
     rows += [("dislike_format", x) for x in d.get("formats", [])] + [("dislike_other", x) for x in d.get("other", [])]
-    con.executemany("INSERT OR REPLACE INTO user_prefs (user_id, kind, value, raw) VALUES (?,?,?,?)",
-                    [(args.user, k, v.strip().lower() if not k.startswith("source_") else v.strip(), text)
-                     for k, v in rows if v and v.strip()])
+    con.cursor().executemany(
+        """INSERT INTO user_prefs (user_id, kind, value, raw) VALUES (%s,%s,%s,%s)
+           ON CONFLICT (user_id, kind, value) DO UPDATE SET raw=excluded.raw""",
+        list({(k, val): (uid, k, val, text) for k, v in rows if v and v.strip()
+              for val in [v.strip().lower() if not k.startswith("source_") else v.strip()]}.values()))
     con.commit()
     con.close()
 

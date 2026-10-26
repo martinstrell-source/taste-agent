@@ -4,8 +4,8 @@
 Takeout puts each Google Maps list in Takeout/Saved/ as its own CSV (Want to go, Favorite places,
 custom lists). Pass one or more CSVs, or the Saved folder.
 
-  python ingest.py --user alex data/Want_to_go.csv
-  python ingest.py --user alex "data/Favorite places.csv"
+  python ingest.py --user martin data/Want_to_go.csv
+  python ingest.py --user martin "data/Favorite places.csv"
   python ingest.py --user sam ~/Downloads/Takeout/Saved
 
 A place on more than one list keeps the strongest: favorites > want_to_go > other lists.
@@ -40,12 +40,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--user", required=True)
     ap.add_argument("paths", nargs="+")
-    ap.add_argument("--db")
     args = ap.parse_args()
 
-    con = connect(args.db)
+    con = connect()
     ensure_schema(con)
-    get_user(con, args.user)
+    uid = get_user(con, args.user)["uid"]
 
     files = []
     for p in map(Path, args.paths):
@@ -63,25 +62,25 @@ def main():
                 continue
             title = (r.get("Title") or "").strip()
             note = (r.get("Note") or "").strip()
-            existing = con.execute("SELECT id, list_name, note FROM places WHERE user_id=? AND place_id=?",
-                                   (args.user, pid)).fetchone()
+            existing = con.execute("SELECT id, list_name, note FROM places WHERE user_id=%s AND place_key=%s",
+                                   (uid, pid)).fetchone()
             if existing is None:
-                con.execute("INSERT INTO places (user_id, list_name, place_id, title, note, url, raw_tags) "
-                            "VALUES (?,?,?,?,?,?,?)",
-                            (args.user, lname, pid, title, note, (r.get("URL") or "").strip(),
-                             (r.get("Tags") or "").strip()))
+                con.execute("INSERT INTO places (user_id, list_name, added_via, place_key, title, note, url, raw_tags) "
+                            "VALUES (%s,%s,'takeout',%s,%s,%s,%s,%s)",
+                            (uid, lname, pid, title, note or None, (r.get("URL") or "").strip(),
+                             (r.get("Tags") or "").strip() or None))
                 added += 1
             else:
                 rid, old_list, old_note = existing
                 changed = False
                 if RANK.get(lname, 1) > RANK.get(old_list, 1):
-                    con.execute("UPDATE places SET list_name=? WHERE id=?", (lname, rid))
+                    con.execute("UPDATE places SET list_name=%s WHERE id=%s", (lname, rid))
                     upgraded += 1
                     changed = True
                 if note and not old_note:
                     # a note added on another list: clear the old extraction so it is redone
-                    con.execute("UPDATE places SET note=? WHERE id=?", (note, rid))
-                    con.execute("DELETE FROM note_extractions WHERE user_id=? AND place_id=?", (args.user, pid))
+                    con.execute("UPDATE places SET note=%s WHERE id=%s", (note, rid))
+                    con.execute("DELETE FROM note_extractions WHERE user_id=%s AND place_key=%s", (uid, pid))
                     changed = True
                 if not changed:
                     skipped += 1
@@ -89,7 +88,8 @@ def main():
         print(f"{f.name} -> list '{lname}': {len(rows)} rows, {added} new, {upgraded} moved to this list, "
               f"{skipped} already there or unreadable")
 
-    for lname, n in con.execute("SELECT list_name, count(*) FROM places WHERE user_id=? GROUP BY 1", (args.user,)):
+    for lname, n in con.execute("SELECT list_name, count(*) FROM places WHERE user_id=%s GROUP BY 1 ORDER BY 2 DESC",
+                                (uid,)).fetchall():
         print(f"  {args.user} / {lname}: {n}")
     print("next: extract.py and enrich.py for this user pick up only the new places")
 

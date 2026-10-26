@@ -7,8 +7,8 @@ every article's take including negative ones, dishes, a map link, and a one-line
 from Claude. Places that are relocating are left out. Reply links open a pre-filled email
 (want / been, loved it / been, meh / not for me) until there is a backend for one-tap buttons.
 
-  python digest.py --user alex            # writes data/digests/alex-YYYY-MM-DD.html
-  python digest.py --user alex --n 8 --no-explain
+  python digest.py --user martin            # writes data/digests/martin-YYYY-MM-DD.html
+  python digest.py --user martin --n 8 --no-explain
 
 Reply links go to DIGEST_REPLY_TO in .env (your address). Without it, they are left out.
 """
@@ -130,17 +130,16 @@ def render(user, picks, reply_to, sources):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--user", required=True)
-    ap.add_argument("--db")
     ap.add_argument("--n", type=int, default=7)
     ap.add_argument("--no-explain", action="store_true")
     ap.add_argument("--out")
     args = ap.parse_args()
 
     load_env()
-    con = connect(args.db)
+    con = connect()
     ensure_schema(con)
     user = get_user(con, args.user)
-    prof = load_profile(args.user)
+    prof = load_profile(con, user)
     ranked = rank_places(con, user, prof)
     pool = [p for p in ranked if p["known"] is None and not p.get("moving")]
     picks = pool[: args.n]
@@ -157,10 +156,13 @@ def main():
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page, encoding="utf-8")
 
-    con.executemany(
-        "INSERT OR REPLACE INTO digest_items (user_id, digest_date, google_place_id, position, score, name) "
-        "VALUES (?,?,?,?,?,?)",
-        [(args.user, day, p["google_place_id"], i, p["score"], p["name"]) for i, p in enumerate(picks, 1)])
+    con.cursor().executemany(
+        """INSERT INTO digest_items (user_id, digest_date, google_place_id, position, score, name, why)
+           VALUES (%s,%s,%s,%s,%s,%s,%s)
+           ON CONFLICT (user_id, digest_date, google_place_id) DO UPDATE SET position=excluded.position,
+           score=excluded.score, name=excluded.name, why=excluded.why""",
+        [(user["uid"], day, p["google_place_id"], i, p["score"], p["name"], p.get("why"))
+         for i, p in enumerate(picks, 1)])
     con.commit()
     con.close()
 

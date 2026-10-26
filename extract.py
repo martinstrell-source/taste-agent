@@ -1,22 +1,22 @@
 """extract.py: Claude reads each saved-place note and pulls out structured fields.
 
-Writes to table `note_extractions` in data/taste.db. Does not modify `places`.
+Writes to table `note_extractions` in Supabase. Does not modify `places`.
 
 Personal shorthand (e.g. "J" = a friend named Jordan) comes from the user_shorthand table, not code.
 
-  python extract.py --user alex --sample 30        # random 30 new notes, stores results, writes a review CSV
-  python extract.py --user alex --sample 30 --redo # same 30 again (same seed), overwriting stored results
-  python extract.py --user alex --sample 30 --redo --no-store --model claude-haiku-5-5   # comparison, CSV only
-  python extract.py --user alex --all              # every note not yet extracted
-  python extract.py --user alex --fix-aliases      # re-apply shorthand to stored rows, no API calls
+  python extract.py --user martin --sample 30        # random 30 new notes, stores results, writes a review CSV
+  python extract.py --user martin --sample 30 --redo # same 30 again (same seed), overwriting stored results
+  python extract.py --user martin --sample 30 --redo --no-store --model claude-haiku-5-5   # comparison, CSV only
+  python extract.py --user martin --all              # every note not yet extracted
+  python extract.py --user martin --fix-aliases      # re-apply shorthand to stored rows, no API calls
 """
-import argparse, csv, json, os, random, sqlite3, sys, time
+import argparse, csv, os, random, sys, time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import anthropic
 
-from common import connect, ensure_schema, get_user, load_env
+from common import connect, ensure_schema, get_user, jsonb, load_env
 
 ROOT = Path(__file__).parent
 DEFAULT_MODEL = "claude-sonnet-5-5"
@@ -53,15 +53,15 @@ def fix_aliases(con, user):
     """Re-apply the user's aliases to rows already stored. No API calls."""
     aliases = user_aliases(user)
     changed = 0
-    for pid, raw in con.execute("SELECT place_id, sources FROM note_extractions WHERE user_id=?",
-                                (user["user_id"],)).fetchall():
-        old = json.loads(raw or "[]")
+    for pid, old in con.execute("SELECT place_key, sources FROM note_extractions WHERE user_id=%s",
+                                (user["uid"],)).fetchall():
+        old = old or []
         new = canon(old, aliases)
         if new != old:
             first = new[0] if new else {"type": "none", "name": ""}
-            con.execute("UPDATE note_extractions SET sources=?, source_type=?, source_name=? "
-                        "WHERE user_id=? AND place_id=?",
-                        (json.dumps(new), first["type"], first["name"], user["user_id"], pid))
+            con.execute("UPDATE note_extractions SET sources=%s, source_type=%s, source_name=%s "
+                        "WHERE user_id=%s AND place_key=%s",
+                        (jsonb(new), first["type"], first["name"], user["uid"], pid))
             changed += 1
     con.commit()
     print(f"aliases applied, {changed} rows updated")
@@ -154,12 +154,11 @@ def main():
     ap.add_argument("--user", required=True)
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--seed", type=int, default=7)
-    ap.add_argument("--db", help="path to taste.db")
     ap.add_argument("--redo", action="store_true", help="include notes already extracted")
     ap.add_argument("--no-store", action="store_true", help="write the review CSV only, leave the database alone")
     args = ap.parse_args()
 
-    con = connect(args.db)
+    con = connect()
     ensure_schema(con)
     user = get_user(con, args.user)
     aliases = user_aliases(user)
@@ -172,11 +171,12 @@ def main():
         sys.exit("ANTHROPIC_API_KEY not set (put it in .env)")
 
     system = SYSTEM_TEMPLATE.replace("{known}", known_sources_text(user))
-    q = ("SELECT p.place_id, p.title, p.note FROM places p "
-         "WHERE p.user_id = ? AND trim(coalesce(p.note,'')) <> ''")
+    q = ("SELECT p.place_key, p.title, p.note FROM places p "
+         "WHERE p.user_id = %s AND trim(coalesce(p.note,'')) <> ''")
     if not args.redo:
-        q += " AND p.place_id NOT IN (SELECT place_id FROM note_extractions WHERE user_id = p.user_id)"
-    rows = con.execute(q + " ORDER BY p.id", (args.user,)).fetchall()
+        q += (" AND NOT EXISTS (SELECT 1 FROM note_extractions e "
+              "WHERE e.user_id = p.user_id AND e.place_key = p.place_key)")
+    rows = con.execute(q + " ORDER BY p.id", (user["uid"],)).fetchall()
     if args.sample:
         random.Random(args.seed).shuffle(rows)
         rows = rows[: args.sample]
@@ -195,13 +195,20 @@ def main():
             first = srcs[0] if srcs else {"type": "none", "name": ""}
             if not args.no_store:
                 con.execute(
-                    """INSERT OR REPLACE INTO note_extractions
-                       (user_id, place_id, model, dishes, source_type, source_name, intent, kind, cuisine,
+                    """INSERT INTO note_extractions
+                       (user_id, place_key, model, dishes, source_type, source_name, intent, kind, cuisine,
                         sentiment, constraints, reason, input_tokens, output_tokens, extracted_at, sources)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),?)""",
-                    (args.user, pid, args.model, json.dumps(d["dishes"]), first["type"], first["name"], d["intent"],
-                     d["kind"], d["cuisine"], d["sentiment"], json.dumps(d["constraints"]), d["reason"],
-                     usage.input_tokens, usage.output_tokens, json.dumps(srcs)),
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),%s)
+                       ON CONFLICT (user_id, place_key) DO UPDATE SET
+                         model=excluded.model, dishes=excluded.dishes, source_type=excluded.source_type,
+                         source_name=excluded.source_name, intent=excluded.intent, kind=excluded.kind,
+                         cuisine=excluded.cuisine, sentiment=excluded.sentiment, constraints=excluded.constraints,
+                         reason=excluded.reason, input_tokens=excluded.input_tokens,
+                         output_tokens=excluded.output_tokens, extracted_at=excluded.extracted_at,
+                         sources=excluded.sources""",
+                    (user["uid"], pid, args.model, jsonb(d["dishes"]), first["type"], first["name"], d["intent"],
+                     d["kind"], d["cuisine"] or None, d["sentiment"], jsonb(d["constraints"]), d["reason"],
+                     usage.input_tokens, usage.output_tokens, jsonb(srcs)),
                 )
                 con.commit()
             results.append((title, note, d))

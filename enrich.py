@@ -15,8 +15,8 @@ Places the extraction already marked not_food are not sent to Google (saves call
 
 Needs GOOGLE_MAPS_API_KEY in .env (Places API (New) enabled). Pro-tier fields only.
 Usage:
-    python enrich.py --user alex           # every place of this user not yet enriched with v2
-    python enrich.py --user alex --redo    # re-run v2 on all of this user's places
+    python enrich.py --user martin           # every place of this user not yet enriched with v2
+    python enrich.py --user martin --redo    # re-run v2 on all of this user's places
 """
 import argparse
 import json
@@ -25,8 +25,8 @@ import sys
 import time
 import urllib.request
 
-from common import (SSL_CTX, connect, ensure_schema, get_user, is_food_types, load_env,  # noqa: F401
-                    name_similarity, norm)
+from common import (SSL_CTX, cats_list, connect, ensure_schema, get_user, is_food_types,  # noqa: F401
+                    load_env, name_similarity, norm)
 from s2decode import feature_id_to_latlng, haversine_m
 
 VERSION = 2
@@ -75,24 +75,9 @@ def pick(title, approx, candidates):
     return p, sim, dist, conf
 
 
-COLUMNS = [  # kept for databases created before common.SCHEMA"lat REAL", "lng REAL", "categories TEXT", "rating REAL", "price_level TEXT",
-           "google_place_id TEXT", "match_confidence TEXT", "approx_lat REAL", "approx_lng REAL",
-           "google_name TEXT", "address TEXT", "name_similarity REAL", "match_distance_m REAL",
-           "is_food INTEGER", "enrich_version INTEGER"]
-
-
-def ensure_columns(con):
-    have = {r[1] for r in con.execute("PRAGMA table_info(places)")}
-    for coldef in COLUMNS:
-        if coldef.split()[0] not in have:
-            con.execute(f"ALTER TABLE places ADD COLUMN {coldef}")
-    con.commit()
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--user", required=True)
-    ap.add_argument("--db")
     ap.add_argument("--redo", action="store_true")
     args = ap.parse_args()
 
@@ -100,16 +85,16 @@ def main():
     if not os.environ.get("GOOGLE_MAPS_API_KEY"):
         sys.exit("Set GOOGLE_MAPS_API_KEY in .env first.")
 
-    con = connect(args.db)
+    con = connect()
     ensure_schema(con)
-    ensure_columns(con)
-    get_user(con, args.user)
-    extract_kind = dict(con.execute("SELECT place_id, kind FROM note_extractions WHERE user_id=?", (args.user,)))
+    uid = get_user(con, args.user)["uid"]
+    extract_kind = dict(con.execute("SELECT place_key, kind FROM note_extractions WHERE user_id=%s",
+                                    (uid,)).fetchall())
 
-    q = "SELECT id, place_id, title FROM places WHERE user_id = ?"
+    q = "SELECT id, place_key, title FROM places WHERE user_id = %s"
     if not args.redo:
         q += f" AND coalesce(enrich_version, 0) < {VERSION}"
-    rows = con.execute(q, (args.user,)).fetchall()
+    rows = con.execute(q + " ORDER BY id", (uid,)).fetchall()
     print(f"{len(rows)} places to enrich (v{VERSION})")
 
     calls = 0
@@ -120,8 +105,8 @@ def main():
 
         if kind == "not_food":
             con.execute(
-                """UPDATE places SET approx_lat=?, approx_lng=?, lat=?, lng=?, is_food=0,
-                   match_confidence='skipped_not_food', enrich_version=? WHERE id=?""",
+                """UPDATE places SET approx_location=pt(%s, %s), location=pt(%s, %s), is_food=false,
+                   match_confidence='skipped_not_food', enrich_version=%s WHERE id=%s""",
                 (alat, alng, alat, alng, VERSION, rid))
             continue
 
@@ -133,27 +118,24 @@ def main():
             continue
 
         if not cands:
-            food = None if kind in (None, "unknown") else 1
+            food = None if kind in (None, "unknown") else True
             con.execute(
-                """UPDATE places SET approx_lat=?, approx_lng=?, lat=?, lng=?, categories=NULL,
+                """UPDATE places SET approx_location=pt(%s, %s), location=pt(%s, %s), categories=NULL,
                    google_place_id=NULL, google_name=NULL, address=NULL, name_similarity=NULL,
-                   match_distance_m=NULL, is_food=?, match_confidence='no_match', enrich_version=?
-                   WHERE id=?""",
+                   match_distance_m=NULL, is_food=%s, match_confidence='no_match', enrich_version=%s
+                   WHERE id=%s""",
                 (alat, alng, alat, alng, food, VERSION, rid))
         else:
             p, sim, dist, conf = pick(title, approx, cands)
             types = p.get("types", [])
-            if kind and kind not in ("unknown", "not_food"):
-                food = 1
-            else:
-                food = 1 if is_food_types(types) else 0
+            food = bool(kind and kind not in ("unknown", "not_food")) or is_food_types(types)
             loc = p["location"]
             con.execute(
-                """UPDATE places SET approx_lat=?, approx_lng=?, lat=?, lng=?, categories=?,
-                   rating=NULL, price_level=NULL, google_place_id=?, google_name=?, address=?,
-                   name_similarity=?, match_distance_m=?, is_food=?, match_confidence=?,
-                   enrich_version=? WHERE id=?""",
-                (alat, alng, loc["latitude"], loc["longitude"], ",".join(types), p.get("id"),
+                """UPDATE places SET approx_location=pt(%s, %s), location=pt(%s, %s), categories=%s,
+                   google_place_id=%s, google_name=%s, address=%s,
+                   name_similarity=%s, match_distance_m=%s, is_food=%s, match_confidence=%s,
+                   enrich_version=%s WHERE id=%s""",
+                (alat, alng, loc["latitude"], loc["longitude"], cats_list(types), p.get("id"),
                  p.get("displayName", {}).get("text", ""), p.get("formattedAddress"),
                  round(sim, 3), round(dist) if dist is not None else None, food, conf,
                  VERSION, rid))
@@ -164,14 +146,14 @@ def main():
     con.commit()
 
     print(f"\nGoogle calls this run: {calls}")
-    u = (args.user,)
-    for row in con.execute("SELECT match_confidence, count(*) FROM places WHERE user_id=? GROUP BY 1 "
-                           "ORDER BY 2 DESC", u):
+    u = (uid,)
+    for row in con.execute("SELECT match_confidence, count(*) FROM places WHERE user_id=%s GROUP BY 1 "
+                           "ORDER BY 2 DESC", u).fetchall():
         print(f"  {row[0]}: {row[1]}")
-    food = con.execute("SELECT coalesce(is_food, -1), count(*) FROM places WHERE user_id=? GROUP BY 1", u).fetchall()
-    print("  food / not food / unknown:", {1: 0, 0: 0, -1: 0} | dict(food))
-    shared = con.execute("""SELECT count(*) FROM (SELECT google_place_id FROM places WHERE user_id=?
-                            AND google_place_id IS NOT NULL GROUP BY 1 HAVING count(*) > 1)""", u).fetchone()[0]
+    food = dict(con.execute("SELECT is_food, count(*) FROM places WHERE user_id=%s GROUP BY 1", u).fetchall())
+    print(f"  food {food.get(True, 0)} / not food {food.get(False, 0)} / unknown {food.get(None, 0)}")
+    shared = con.execute("""SELECT count(*) FROM (SELECT google_place_id FROM places WHERE user_id=%s
+                            AND google_place_id IS NOT NULL GROUP BY 1 HAVING count(*) > 1) x""", u).fetchone()[0]
     print(f"  Google places matched by more than one save: {shared}")
     con.close()
 

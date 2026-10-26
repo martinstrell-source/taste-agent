@@ -1,15 +1,22 @@
-"""Shared helpers: paths, .env, database connection, users, name matching."""
+"""Shared helpers: paths, .env, Supabase (Postgres) connection, users, name matching.
+
+The scripts talk to Supabase's Postgres database directly, as the database owner, so row level
+security does not apply to them. Connection string: SUPABASE_DB_URL in .env (Supabase dashboard >
+Connect > Session pooler). New sign-in accounts are created through the Auth API, which needs
+SUPABASE_URL and SUPABASE_SECRET_KEY.
+"""
 import json
 import os
 import re
-import sqlite3
 import ssl
 import unicodedata
+import urllib.error
+import urllib.request
 from difflib import SequenceMatcher
 from pathlib import Path
 
 ROOT = Path(__file__).parent
-DB_PATH = ROOT / "data" / "taste.db"
+DB_PATH = ROOT / "data" / "taste.db"  # the old SQLite database; only migrate_to_supabase.py reads it
 
 try:
     import certifi
@@ -27,93 +34,110 @@ def load_env():
                 os.environ.setdefault(k.strip(), v.strip())
 
 
-def connect(db=None):
-    con = sqlite3.connect(str(db or DB_PATH), check_same_thread=False)
-    con.execute("PRAGMA foreign_keys = ON")
+def connect(url=None):
+    """Open a connection to the Supabase database. Call con.commit() to save writes."""
+    import psycopg
+    load_env()
+    url = url or os.environ.get("SUPABASE_DB_URL")
+    if not url:
+        raise SystemExit("SUPABASE_DB_URL is not set. Add it to .env (Supabase > Connect > Session pooler).")
+    con = psycopg.connect(url)
+    con.execute("SET search_path TO public, extensions")  # PostGIS lives in the extensions schema
     return con
 
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    user_id TEXT PRIMARY KEY,
-    display_name TEXT,
-    home_lat REAL, home_lng REAL, home_label TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
-);
--- personal shorthand found in a user's notes: "J" -> Jordan (person), "the group" -> a Facebook group
-CREATE TABLE IF NOT EXISTS user_shorthand (
-    user_id TEXT REFERENCES users(user_id),
-    term TEXT, type TEXT, name TEXT, description TEXT,
-    PRIMARY KEY (user_id, term)
-);
-CREATE TABLE IF NOT EXISTS places (
-    id INTEGER PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users(user_id),
-    list_name TEXT,              -- want_to_go | favorites | <custom list name>
-    place_id TEXT,               -- Google feature id from the Takeout URL (0x..:0x..)
-    title TEXT, note TEXT, url TEXT, source TEXT, sentiment TEXT, raw_tags TEXT,
-    lat REAL, lng REAL, categories TEXT, rating REAL, price_level TEXT, google_place_id TEXT,
-    match_confidence TEXT, approx_lat REAL, approx_lng REAL, google_name TEXT, address TEXT,
-    name_similarity REAL, match_distance_m REAL, is_food INTEGER, enrich_version INTEGER,
-    UNIQUE (user_id, place_id)
-);
-CREATE TABLE IF NOT EXISTS note_extractions (
-    user_id TEXT NOT NULL, place_id TEXT NOT NULL,
-    model TEXT, dishes TEXT, source_type TEXT, source_name TEXT, intent TEXT, kind TEXT,
-    cuisine TEXT, sentiment TEXT, constraints TEXT, reason TEXT, input_tokens INTEGER,
-    output_tokens INTEGER, extracted_at TEXT, sources TEXT,
-    PRIMARY KEY (user_id, place_id)
-);
--- a user's reaction to a place (usually a suggested pick)
-CREATE TABLE IF NOT EXISTS feedback (
-    user_id TEXT NOT NULL REFERENCES users(user_id),
-    google_place_id TEXT NOT NULL,
-    name TEXT,
-    reaction TEXT NOT NULL,      -- love (been, liked) | meh (been, would not return) | no (not interested) | want (would save)
-    note TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    PRIMARY KEY (user_id, google_place_id)
-);
--- what a user told us directly at signup (no Google Maps history needed)
--- kind: cuisine | dish | format | source_<type> | dislike_cuisine | dislike_dish | dislike_format | dislike_other
-CREATE TABLE IF NOT EXISTS user_prefs (
-    user_id TEXT NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL, raw TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    PRIMARY KEY (user_id, kind, value)
-);
--- what each digest contained, for measuring saves from suggestions later
-CREATE TABLE IF NOT EXISTS digest_items (
-    user_id TEXT NOT NULL, digest_date TEXT NOT NULL, google_place_id TEXT NOT NULL,
-    position INTEGER, score REAL, name TEXT,
-    PRIMARY KEY (user_id, digest_date, google_place_id)
-);
--- Google rating info, fetched only for places about to be shown as picks (Enterprise-tier fields)
-CREATE TABLE IF NOT EXISTS place_ratings (
-    google_place_id TEXT PRIMARY KEY,
-    rating REAL, user_rating_count INTEGER, price_level TEXT,
-    fetched_at TEXT DEFAULT (datetime('now'))
-);
-"""
+def jsonb(x):
+    """Wrap a Python value for a jsonb column."""
+    from psycopg.types.json import Jsonb
+    return Jsonb(x)
 
-REACTIONS = {"love", "meh", "no", "want"}
+
+def json_param(x):
+    """Wrap a Python value for a json column (keeps key order)."""
+    from psycopg.types.json import Json
+    return Json(x)
+
+
+# Locations are PostGIS points. Write them with pt(%s, %s) (lat, lng; defined in schema_v2.sql),
+# read them back with lat_sql(col) / lng_sql(col).
+def lat_sql(col):
+    return f"ST_Y({col}::geometry)"
+
+
+def lng_sql(col):
+    return f"ST_X({col}::geometry)"
+
+
+def cats_list(types):
+    """Google types list -> value for a text[] column (None when empty)."""
+    return list(types) or None
 
 
 def ensure_schema(con):
-    con.executescript(SCHEMA)
-    cols = {r[1] for r in con.execute("PRAGMA table_info(users)")}
-    if "email" not in cols:
-        con.execute("ALTER TABLE users ADD COLUMN email TEXT")
-
-
-def get_user(con, user_id):
-    row = con.execute("SELECT user_id, display_name, home_lat, home_lng, home_label, email FROM users "
-                      "WHERE user_id=?", (user_id,)).fetchone()
+    """Check that schema.sql and schema_v2.sql have been run."""
+    row = con.execute("SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                      "WHERE n.nspname = 'public' AND p.proname = 'pt'").fetchone()
     if not row:
-        raise SystemExit(f"No user '{user_id}'. Add one with: python users.py add {user_id} --name ... --home LAT,LNG")
+        raise SystemExit("The Supabase tables are missing or out of date. Run schema.sql, then schema_v2.sql, "
+                         "in the Supabase SQL Editor.")
+
+
+def get_user(con, handle):
+    """Look up a user by handle ('martin'). user_id is the handle; uid is the Supabase account id."""
+    row = con.execute(f"""SELECT user_id, handle, display_name, {lat_sql('home')}, {lng_sql('home')},
+                                 home_label, email FROM app_users WHERE handle=%s""", (handle,)).fetchone()
+    if not row:
+        raise SystemExit(f"No user '{handle}'. Add one with: python users.py add {handle} --email ... "
+                         "--name ... --home LAT,LNG")
+    uid = row[0]
     shorthand = [dict(zip(("term", "type", "name", "description"), r)) for r in con.execute(
-        "SELECT term, type, name, description FROM user_shorthand WHERE user_id=? ORDER BY term", (user_id,))]
-    return {"user_id": row[0], "display_name": row[1], "home": (row[2], row[3]) if row[2] is not None else None,
-            "home_label": row[4], "email": row[5], "shorthand": shorthand}
+        "SELECT term, type, name, description FROM user_shorthand WHERE user_id=%s ORDER BY term", (uid,))]
+    return {"uid": uid, "user_id": row[1], "display_name": row[2],
+            "home": (row[3], row[4]) if row[3] is not None else None,
+            "home_label": row[5], "email": row[6], "shorthand": shorthand}
+
+
+def auth_user_id(con, email):
+    """Supabase sign-in account id for this email, creating the account if there is none."""
+    row = con.execute("SELECT id FROM auth.users WHERE lower(email) = lower(%s)", (email,)).fetchone()
+    if row:
+        return row[0]
+    url, key = os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_SECRET_KEY")
+    if not (url and key):
+        raise SystemExit("SUPABASE_URL and SUPABASE_SECRET_KEY must be in .env to create a sign-in account.")
+    h = {"apikey": key, "Content-Type": "application/json"}
+    if not key.startswith("sb_"):  # legacy JWT keys also go in Authorization
+        h["Authorization"] = f"Bearer {key}"
+    req = urllib.request.Request(url.rstrip("/") + "/auth/v1/admin/users", method="POST", headers=h,
+                                 data=json.dumps({"email": email, "email_confirm": True}).encode())
+    try:
+        with urllib.request.urlopen(req, timeout=60, context=SSL_CTX) as r:
+            return json.loads(r.read())["id"]
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f"Could not create the sign-in account for {email}: HTTP {e.code} {e.read().decode()[:300]}")
+
+
+def upsert_user(con, handle, email, name=None, home=None, label=None):
+    """Create or update an app user. home is (lat, lng) or None. Returns the uid."""
+    existing = con.execute("SELECT user_id, email FROM app_users WHERE handle=%s", (handle,)).fetchone()
+    if existing:
+        uid = existing[0]
+    else:
+        if not email:
+            raise SystemExit(f"New user '{handle}' needs --email (it becomes their sign-in account).")
+        uid = auth_user_id(con, email)
+    lat, lng = home if home else (None, None)
+    con.execute("""
+        INSERT INTO app_users (user_id, handle, display_name, email, home, home_label)
+        VALUES (%s, %s, %s, %s, pt(%s, %s), %s)
+        ON CONFLICT (user_id) DO UPDATE SET
+          handle = excluded.handle,
+          display_name = coalesce(nullif(excluded.display_name, ''), app_users.display_name),
+          email = coalesce(nullif(excluded.email, ''), app_users.email),
+          home = coalesce(excluded.home, app_users.home),
+          home_label = coalesce(nullif(excluded.home_label, ''), app_users.home_label)""",
+                (uid, handle, name, email or None, lat, lng, label))
+    return uid
 
 
 def norm(s):
@@ -141,6 +165,8 @@ FOOD_TYPES = {
     "acai_shop", "bubble_tea_shop", "cafeteria", "diner", "bistro", "snack_bar", "farmers_market",
     "butcher_shop", "liquor_store", "asian_grocery_store", "chocolate_factory",
 }
+
+REACTIONS = {"love", "meh", "no", "want"}
 
 
 def is_food_types(types):

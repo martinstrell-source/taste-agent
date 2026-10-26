@@ -1,83 +1,83 @@
-# Taste Agent
+# Taste Agent (working title)
 
-A prototype that learns what kind of food places someone likes and sends them a weekly email of
-new Bay Area places that fit, each with enough information to decide: where it is, what it
-serves, what critics and Google reviewers say, and one line on why it fits them.
+A dining-intentions agent seeded from your Google Maps saved lists.
+Proves the AI thesis before any mobile build: a taste profiler trained on
+real saved places, with a "why now" ranker on top.
 
-Built as a working prototype for a small group of testers (October 2026).
+## The thesis
 
-## How it works
+Everyone recommends from what you saved. Nobody learns from what you
+saved but never visited, from the notes you left ("Eli says meh",
+"Almost went with Evan"), or from the moment you're standing somewhere
+at 7pm on a Friday. This prototype tests whether that signal is real.
 
-```
-your taste                            this week's food coverage
-  Google Maps lists (Takeout)            Eater SF, SFist, SF Standard, Tablehopper (RSS)
-  or a few sentences at signup           food newsletters (IMAP inbox)
-        |                                        |
-  Claude reads notes / description       Claude lists every place each article names,
-  Google matches places                  with dishes, tone, opening/closing/review
-        |                                        |
-     taste profile  -------- match.py --------  candidates (matched on Google)
-                                 |
-                       digest.py: weekly email
-                                 |
-                       reactions (want / loved it / meh / not for me) feed back in
-```
+## Pipeline (Supabase, Oct 26 2026)
 
-| Script | What it does |
-|---|---|
-| `users.py` | Add a user: home location, email, personal shorthand ("J" = a friend named Jordan) |
-| `ingest.py` | Load Google Takeout saved lists (Want to go, Favorites, custom lists) |
-| `onboard.py` | Start a user from a few sentences instead of Takeout; Claude turns it into structure |
-| `extract.py` | Claude reads each saved place's note: dishes, who recommended it, intent, sentiment |
-| `enrich.py` | Match saves to Google Places; flag non-food places |
-| `profile.py` | Build a per-user taste profile (cuisines, kinds of place, dishes, trusted sources, dislikes) |
-| `fetch_sources.py` | Pull new articles and newsletters; Claude extracts the places; match them on Google |
-| `match.py` | Score candidates against a profile; skip places the user already knows |
-| `digest.py` | Build the weekly email |
-| `feedback.py` | Record a reaction to a place |
+Everything is per user and lives in Supabase (Postgres + PostGIS). The scripts connect to the database
+directly with `SUPABASE_DB_URL`; the iPhone app reads the same tables through the Supabase API, limited
+to the signed-in user's rows. `data/taste.db` is the old SQLite database, kept for reference only.
 
-## Design notes
-
-**Takeout place ids are not Places API ids.** A Takeout save carries Google's internal feature id
-(`0x808f...:0x...`). The first half is an S2 cell id, so `s2decode.py` decodes an approximate
-location (usually within a few km) with no API call. Searching by name *biased to that location*
-fixed most wrong matches: chain branches stopped collapsing onto one location (69 shared matches
-down to 23, most of those true duplicate saves) and "Nijō Castle" stopped matching a Fremont sushi bar.
-
-**Messy notes need entity resolution.** Notes say "SF Chron", "Chronicle", "Merc", or a single
-initial for a person. Claude extracts sources and normalizes names; per-user shorthand lives in
-the database, not in code, so the pipeline works for any user.
-
-**Cuisine from names.** Google files many regional cuisines under generic types (a Uyghur place
-comes back as "chinese" or "halal"), so place names are checked for about 20 regional cuisines.
-
-**Scoring.** Each candidate is scored on how distinctive its cuisine and kind of place are for this
-user compared with a typical Bay Area diner, dish overlap, how much the user trusts the source,
-whether it is an opening/review/list entry, distance from home, and the article's tone (a pan cuts
-the score). Stated dislikes push matching places down. A Claude rerank using notes and reactions is
-the planned next step.
-
-**Cost control.** Google Places fields are chosen to stay in the free tiers (Pro fields for matching;
-rating and review count, which are pricier, only for the ~10 places shown each week, cached 30 days).
-Feed extraction uses Sonnet because it runs once per article and is shared by all users; per-user
-note extraction can use Haiku.
-
-## Setup
+One-time setup on a new machine:
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env   # add your keys
-.venv/bin/python users.py add alex --name Alex --home 37.87,-122.27 --label Berkeley --email alex@example.com
-.venv/bin/python onboard.py --user alex --text "Love Burmese and Oaxacan food, good coffee. Favorites: ..."
-#   or: ingest.py --user alex ~/Downloads/Takeout/Saved && extract.py --user alex --all && enrich.py --user alex
-.venv/bin/python profile.py --user alex
-.venv/bin/python fetch_sources.py
-.venv/bin/python digest.py --user alex
+.venv/bin/pip install "psycopg[binary]" anthropic feedparser certifi
+# .env needs: SUPABASE_DB_URL (Supabase > Connect > Session pooler, with the database password),
+# SUPABASE_URL, SUPABASE_SECRET_KEY, ANTHROPIC_API_KEY, GOOGLE_MAPS_API_KEY
+# Supabase SQL Editor: run schema.sql, then schema_v2.sql
 ```
 
-Data lives in a local SQLite file (`data/taste.db`), which is not in this repository.
+```bash
+.venv/bin/python users.py add sam --email sam@example.com --name Sam --home 37.87,-122.27 --label Berkeley
+.venv/bin/python ingest.py --user sam ~/Downloads/Takeout/Saved     # every list; favorites count double
+.venv/bin/python extract.py --user sam --all       # Claude reads notes (dishes, sources, intent)
+.venv/bin/python enrich.py --user sam              # Google: location, categories, food or not
+.venv/bin/python profile.py --user sam             # -> user_profiles table
+.venv/bin/python fetch_sources.py                  # shared: new places from Bay Area food feeds
+.venv/bin/python match.py --user sam --explain 10  # -> data/picks/sam.json
+.venv/bin/python digest.py --user sam              # -> data/digests/sam-<date>.html (preview) + digest_items
+.venv/bin/python feedback.py sam "Place name" love|meh|no|want
+.venv/bin/python onboard.py --user dana --email dana@example.com --text "I live in Berkeley. Love ..."
+```
 
-## Privacy
+`--user` takes the short handle (`martin`); a new user also needs `--email`, which becomes their
+Supabase sign-in account.
 
-Personal data (saved places, notes, profiles, digests, API keys) stays local and is excluded by
-`.gitignore`. From articles and newsletters, only place names, links and one-line summaries are kept.
+Files: common.py (connection, helpers), schema.sql + schema_v2.sql (Supabase tables, run once),
+s2decode.py (approximate location from Takeout ids), migrate_to_supabase.py (one-time copy of the
+SQLite data; do not rerun once the scripts write to Supabase, or it will overwrite newer rows with old
+ones). migrate_v3.py, rank.py and *_v1.py are superseded and kept for reference.
+
+## Earlier notes
+
+
+1. **ingest.py** — Takeout `Saved/*.csv` → SQLite. Extracts place ids,
+   mines notes for sources (reddit, yelp, chronicle, michelin, people)
+   and sentiment (negative, near_miss, neutral). Dedupes by place id.
+2. **enrich.py** — Places API (New) Text Search → coordinates, types,
+   rating, price level. NOTE: Takeout place ids (`0x…:0x…`) are Google's
+   internal feature ids, not Places API ids, so enrichment is title
+   search with a fuzzy-match flag. Needs `GOOGLE_MAPS_API_KEY`.
+3. **profile.py** — theme affinities, source trust, chain behavior,
+   sentiment counts → `data/taste_profile.json`.
+4. **rank.py** — "why now" skeleton: taste × proximity × quality,
+   top 5 with explanation placeholders. The Claude explainer and the
+   per-place theme tags are the next build step.
+
+## Run it
+
+```bash
+python3 ingest.py        # CSV -> data/taste.db
+python3 profile.py       # -> data/taste_profile.json + summary
+# enrichment needs a key:
+GOOGLE_MAPS_API_KEY=... python3 enrich.py
+python3 rank.py --lat 37.76 --lng -122.46 --when "Friday 7pm"
+```
+
+## What's next
+
+- Per-place theme tags stored at ingest/profile time (ranker needs them
+  for the real taste score; currently neutral 0.5).
+- Claude-powered "why this, why now" explanations.
+- Thumbs up/down feedback loop → profile updates (the learning story).
+- Share-extension capture design (the app becomes the save point).
+- Then, and only then: the Expo mobile build.
