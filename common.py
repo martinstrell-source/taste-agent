@@ -74,12 +74,16 @@ def cats_list(types):
 
 
 def ensure_schema(con):
-    """Check that schema.sql and schema_v2.sql have been run."""
+    """Check that schema.sql, schema_v2.sql and schema_v3.sql have been run."""
     row = con.execute("SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
                       "WHERE n.nspname = 'public' AND p.proname = 'pt'").fetchone()
     if not row:
         raise SystemExit("The Supabase tables are missing or out of date. Run schema.sql, then schema_v2.sql, "
-                         "in the Supabase SQL Editor.")
+                         "then schema_v3.sql, in the Supabase SQL Editor.")
+    row = con.execute("SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' "
+                      "AND table_name = 'places' AND column_name = 'removed_at'").fetchone()
+    if not row:
+        raise SystemExit("The places table is missing removed_at. Run schema_v3.sql in the Supabase SQL Editor.")
 
 
 def get_user(con, handle):

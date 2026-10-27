@@ -91,7 +91,7 @@ def main():
     extract_kind = dict(con.execute("SELECT place_key, kind FROM note_extractions WHERE user_id=%s",
                                     (uid,)).fetchall())
 
-    q = "SELECT id, place_key, title FROM places WHERE user_id = %s"
+    q = "SELECT id, place_key, title FROM places WHERE user_id = %s AND removed_at IS NULL"
     if not args.redo:
         q += f" AND coalesce(enrich_version, 0) < {VERSION}"
     rows = con.execute(q + " ORDER BY id", (uid,)).fetchall()

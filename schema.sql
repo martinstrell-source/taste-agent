@@ -59,6 +59,7 @@ create table if not exists public.places (
   name_similarity   real,
   match_distance_m  real,
   created_at        timestamptz not null default now(),
+  removed_at        timestamptz,            -- taken off the user's Takeout lists (ingest.py)
   unique (user_id, place_key)
 );
 create index if not exists places_user_idx on public.places (user_id);
@@ -267,7 +268,7 @@ as $$
            st_y(p.location::geometry) as place_lat, st_x(p.location::geometry) as place_lng,
            st_distance(p.location, here.g) as distance_m, p.categories, p.list_name, p.note
     from places p, here, me
-    where p.user_id = me.uid and p.is_food and p.location is not null
+    where p.user_id = me.uid and p.is_food and p.location is not null and p.removed_at is null
       and coalesce(p.match_confidence, '') <> 'weak'
       and st_dwithin(p.location, here.g, radius_m)
   ), picks as (

@@ -132,7 +132,7 @@ def main():
                {lat_sql('p.location')}, {lng_sql('p.location')}, e.dishes::text, e.cuisine, e.sources::text,
                e.kind, e.sentiment, e.reason, p.list_name
         FROM places p LEFT JOIN note_extractions e ON e.user_id = p.user_id AND e.place_key = p.place_key
-        WHERE p.user_id = %s AND p.is_food
+        WHERE p.user_id = %s AND p.is_food AND p.removed_at IS NULL
         ORDER BY CASE p.list_name WHEN 'favorites' THEN 0 WHEN 'want_to_go' THEN 1 ELSE 2 END, p.id
     """, (uid,)).fetchall()
     # places the user reacted to (usually earlier picks): use the feed candidate's data

@@ -172,7 +172,7 @@ def main():
 
     system = SYSTEM_TEMPLATE.replace("{known}", known_sources_text(user))
     q = ("SELECT p.place_key, p.title, p.note FROM places p "
-         "WHERE p.user_id = %s AND trim(coalesce(p.note,'')) <> ''")
+         "WHERE p.user_id = %s AND p.removed_at IS NULL AND trim(coalesce(p.note,'')) <> ''")
     if not args.redo:
         q += (" AND NOT EXISTS (SELECT 1 FROM note_extractions e "
               "WHERE e.user_id = p.user_id AND e.place_key = p.place_key)")

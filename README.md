@@ -23,12 +23,13 @@ One-time setup on a new machine:
 .venv/bin/pip install "psycopg[binary]" anthropic feedparser certifi
 # .env needs: SUPABASE_DB_URL (Supabase > Connect > Session pooler, with the database password),
 # SUPABASE_URL, SUPABASE_SECRET_KEY, ANTHROPIC_API_KEY, GOOGLE_MAPS_API_KEY
-# Supabase SQL Editor: run schema.sql, then schema_v2.sql
+# Supabase SQL Editor: run schema.sql, then schema_v2.sql, then schema_v3.sql
 ```
 
 ```bash
 .venv/bin/python users.py add sam --email sam@example.com --name Sam --home 37.87,-122.27 --label Berkeley
 .venv/bin/python ingest.py --user sam ~/Downloads/Takeout/Saved     # every list; favorites count double
+.venv/bin/python ingest.py --user sam <newer Saved folder> --dry-run  # later exports: preview new, edited, removed
 .venv/bin/python extract.py --user sam --all       # Claude reads notes (dishes, sources, intent)
 .venv/bin/python enrich.py --user sam              # Google: location, categories, food or not
 .venv/bin/python profile.py --user sam             # -> user_profiles table
@@ -42,7 +43,7 @@ One-time setup on a new machine:
 `--user` takes the short handle (`martin`); a new user also needs `--email`, which becomes their
 Supabase sign-in account.
 
-Files: common.py (connection, helpers), schema.sql + schema_v2.sql (Supabase tables, run once),
+Files: common.py (connection, helpers), schema.sql + schema_v2.sql + schema_v3.sql (Supabase tables, run once each),
 s2decode.py (approximate location from Takeout ids), migrate_to_supabase.py (one-time copy of the
 SQLite data; do not rerun once the scripts write to Supabase, or it will overwrite newer rows with old
 ones). migrate_v3.py, rank.py and *_v1.py are superseded and kept for reference.
