@@ -43,7 +43,7 @@ One-time setup on a new machine:
 `--user` takes the short handle (`martin`); a new user also needs `--email`, which becomes their
 Supabase sign-in account.
 
-Files: common.py (connection, helpers), schema.sql + schema_v2.sql + schema_v3.sql (Supabase tables, run once each),
+Files: app/ (the iPhone app, Expo; see app/README.md), common.py (connection, helpers), schema.sql + schema_v2.sql + schema_v3.sql (Supabase tables, run once each),
 s2decode.py (approximate location from Takeout ids), migrate_to_supabase.py (one-time copy of the
 SQLite data; do not rerun once the scripts write to Supabase, or it will overwrite newer rows with old
 ones). migrate_v3.py, rank.py and *_v1.py are superseded and kept for reference.
