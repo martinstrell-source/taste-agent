@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
@@ -11,11 +11,13 @@ import {
   priceText,
   ratingText,
   sourceLine,
+  wazeUrl,
 } from '@/lib/format';
 import type { HideReason } from '@/lib/hide';
 import { pickMentions, type Mention } from '@/lib/picks';
 import { isOpenNow, todaysHours } from '@/lib/hours';
 import { fetchPlaceDetails, type NearbyPlace, type PlaceDetails } from '@/lib/supabase';
+import { listVisits, REACTION_LABEL, type Visit } from '@/lib/visits';
 import { colors, groupColor } from '@/lib/theme';
 
 type Props = {
@@ -24,6 +26,8 @@ type Props = {
   onHide: (p: NearbyPlace, reason: HideReason) => void;
   onMove: (p: NearbyPlace, list: 'favorites' | 'want_to_go') => void;
   onPick: (p: NearbyPlace, action: 'want' | 'not_interested') => void;
+  onLogVisit: (p: NearbyPlace) => void;
+  visitsKey: number; // changes after a visit is saved, to reload the list
   onDetails: (googleId: string, d: PlaceDetails) => void; // so the list and filters see it too
 };
 
@@ -33,10 +37,23 @@ function shortDate(iso: string): string {
 }
 
 // Bottom card with the basics for one place
-export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onDetails }: Props) {
+export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLogVisit, visitsKey, onDetails }: Props) {
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(false);
   const [mentions, setMentions] = useState<Mention[]>([]);
+  const [visits, setVisits] = useState<Visit[]>([]);
+
+  // your past visits here: date, reaction, what you ordered, photos
+  useEffect(() => {
+    setVisits([]);
+    if (!place) return;
+    let cancelled = false;
+    listVisits(place).then((v) => !cancelled && setVisits(v));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [place?.ref, place?.kind, visitsKey]);
 
   // for picks: which outlet mentioned it, with a link to the article
   useEffect(() => {
@@ -98,6 +115,7 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onDe
               </View>
             )}
 
+            {place.kind === 'pick' && !!place.why && <Text style={styles.why}>Why you: {place.why}</Text>}
             {!!categoryText(place) && <Text style={styles.muted}>{categoryText(place, 5)}</Text>}
             {!!place.address && <Text style={styles.text}>{place.address}</Text>}
             {!!place.note && (
@@ -121,12 +139,52 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onDe
               </View>
             ))}
             {!!source && <Text style={styles.source}>{source}</Text>}
+            {visits.length > 0 && <Text style={styles.noteLabel}>Your visits</Text>}
+            {visits.map((v) => (
+              <View key={v.id} style={styles.visit}>
+                <Text style={styles.visitHead}>
+                  {shortDate(v.visited_on)}
+                  {v.reaction ? ` · ${REACTION_LABEL[v.reaction]}` : ''}
+                  {v.bill_total !== null ? ` · $${Number(v.bill_total).toFixed(2)}` : ''}
+                </Text>
+                {!!v.thoughts && <Text style={styles.text}>{v.thoughts}</Text>}
+                {v.items.length > 0 && (
+                  <Text style={styles.muted}>
+                    {v.items.map((i) => `${i.name}${i.qty > 1 ? ` ×${i.qty}` : ''}`).join(', ')}
+                  </Text>
+                )}
+                {(v.photos.length > 0 || v.bill) && (
+                  <ScrollView horizontal contentContainerStyle={{ gap: 6 }}>
+                    {v.photos.map((u) => (
+                      <Pressable key={u} onPress={() => Linking.openURL(u)}>
+                        <Image source={{ uri: u }} style={styles.thumb} />
+                      </Pressable>
+                    ))}
+                    {v.bill && (
+                      <Pressable onPress={() => Linking.openURL(v.bill as string)}>
+                        <Image source={{ uri: v.bill }} style={styles.thumb} />
+                      </Pressable>
+                    )}
+                  </ScrollView>
+                )}
+              </View>
+            ))}
           </ScrollView>
 
-          <Pressable
-            style={({ pressed }) => [styles.button, pressed && { opacity: 0.7 }]}
-            onPress={() => Linking.openURL(mapsUrl(place))}>
-            <Text style={styles.buttonText}>Open in Maps</Text>
+          <View style={styles.hideRow}>
+            <Pressable
+              style={({ pressed }) => [styles.button, { flex: 2 }, pressed && { opacity: 0.7 }]}
+              onPress={() => Linking.openURL(mapsUrl(place))}>
+              <Text style={styles.buttonText}>Open in Maps</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.button, styles.wazeBtn, pressed && { opacity: 0.7 }]}
+              onPress={() => Linking.openURL(wazeUrl(place))}>
+              <Text style={styles.buttonText}>Waze</Text>
+            </Pressable>
+          </View>
+          <Pressable style={styles.moveBtn} onPress={() => onLogVisit(place)}>
+            <Text style={styles.hideText}>I went: log a visit</Text>
           </Pressable>
           {place.kind === 'pick' && (
             <View style={styles.hideRow}>
@@ -200,6 +258,11 @@ const styles = StyleSheet.create({
   },
   hideText: { color: colors.text, fontSize: 15, fontWeight: '600', textAlign: 'center' },
   wantBtn: { backgroundColor: colors.saved },
+  why: { fontSize: 15, fontWeight: '600', color: colors.pick },
+  visit: { gap: 3, paddingVertical: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+  visitHead: { fontSize: 15, fontWeight: '600', color: colors.text },
+  thumb: { width: 72, height: 72, borderRadius: 8, backgroundColor: colors.line },
+  wazeBtn: { flex: 1, backgroundColor: '#33CCFF' },
   mention: { gap: 2, paddingTop: 2 },
   mentionSource: { fontSize: 15, fontWeight: '600', color: colors.text },
   link: { color: colors.accent, fontSize: 15, fontWeight: '600' },

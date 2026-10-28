@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -14,7 +15,9 @@ import {
 import MapView, { Marker, type Region } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import AddPlace from '@/components/AddPlace';
 import HiddenList from '@/components/HiddenList';
+import LogVisit from '@/components/LogVisit';
 import PlaceCard from '@/components/PlaceCard';
 import {
   categoryText,
@@ -32,6 +35,7 @@ import {
   type Kind,
 } from '@/lib/format';
 import { hidePlace, moveToList, undoHide, type HideReason } from '@/lib/hide';
+import { areaName, runDiscover } from '@/lib/discover';
 import { notInterested, saveFromPick, undoPick } from '@/lib/picks';
 import { suggestPlaces, type Suggestion } from '@/lib/places-search';
 import { isOpenNow } from '@/lib/hours';
@@ -73,6 +77,29 @@ export default function Nearby() {
 
   // filters
   const [showFilters, setShowFilters] = useState(false);
+
+  // map can be collapsed for more list on small phones; remembered between launches
+  const [mapOpen, setMapOpen] = useState(true);
+  // Nearest, or Best match (picks by taste score first); also remembered
+  const [sort, setSort] = useState<'near' | 'match'>('near');
+  useEffect(() => {
+    AsyncStorage.multiGet(['mapOpen', 'sort'])
+      .then((kv) => {
+        if (kv[0][1] === 'false') setMapOpen(false);
+        if (kv[1][1] === 'match') setSort('match');
+      })
+      .catch(() => {});
+  }, []);
+  function chooseSort(s: 'near' | 'match') {
+    setSort(s);
+    AsyncStorage.setItem('sort', s).catch(() => {});
+  }
+  function toggleMap() {
+    setMapOpen((o) => {
+      AsyncStorage.setItem('mapOpen', String(!o)).catch(() => {});
+      return !o;
+    });
+  }
   const [kind, setKind] = useState<Kind>('all');
   const [prices, setPrices] = useState<Set<string>>(new Set());
   const [openNow, setOpenNow] = useState(false);
@@ -82,6 +109,10 @@ export default function Nearby() {
   const [undo, setUndo] = useState<{ label: string; run: () => Promise<void> } | null>(null);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showHidden, setShowHidden] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [discovering, setDiscovering] = useState<string | null>(null); // status line while Discover runs
+  const [visitFor, setVisitFor] = useState<NearbyPlace | null>(null);
+  const [visitsKey, setVisitsKey] = useState(0);
 
   // where am I?
   const locate = useCallback(async () => {
@@ -241,10 +272,16 @@ export default function Nearby() {
       }
       return true;
     });
+    if (sort === 'match') {
+      // strongest picks first (unscored new picks after them), then your saves: Favorites, Want to go, others
+      const rank = (p: NearbyPlace) =>
+        p.kind === 'pick' ? (p.score == null ? 1 : 0) : p.list_name === 'favorites' ? 2 : p.list_name === 'want_to_go' ? 3 : 4;
+      list.sort((a, b) => rank(a) - rank(b) || (b.score ?? 0) - (a.score ?? 0) || a.distance_m - b.distance_m);
+    }
     return { shown: list, unknown: unknownCount };
-  }, [merged, hiddenGroups, kind, prices, openNow]);
+  }, [merged, hiddenGroups, kind, prices, openNow, sort]);
 
-  const activeFilters = (kind !== 'all' ? 1 : 0) + (prices.size ? 1 : 0) + (openNow ? 1 : 0);
+  const activeFilters = (kind !== 'all' ? 1 : 0) + (prices.size ? 1 : 0) + (openNow ? 1 : 0) + (sort === 'match' ? 1 : 0);
 
   function toggleGroup(g: Group) {
     setHiddenGroups((h) => {
@@ -308,6 +345,36 @@ export default function Nearby() {
     }
   }
 
+  // Discover: places you'd like around the map's center. Quick Google results first, then the web.
+  async function discover() {
+    const at = mapCenter ?? center;
+    if (!at || discovering) return;
+    const name = (await areaName(at.lat, at.lng)) ?? placeName ?? undefined;
+    const label = name ?? 'here';
+    setError(null);
+    setDiscovering(`Finding places you'd like near ${label}…`);
+    try {
+      const quick = await runDiscover('google', at.lat, at.lng, 6000, name);
+      // show what was found: wider radius, best matches first
+      setRadius(10000);
+      chooseSort('match');
+      setCenter({ ...at });
+      setDiscovering(`Found ${quick.places} nearby. Searching the local food press…`);
+      const web = await runDiscover('web', at.lat, at.lng, 8000, name);
+      setReload((n) => n + 1);
+      setDiscovering(
+        web.message ??
+          (web.places
+            ? `Added ${web.places} from the local food press${web.cached ? ' (searched recently)' : ''}.`
+            : 'No more from the web this time.'),
+      );
+      setTimeout(() => setDiscovering(null), 5000);
+    } catch (e) {
+      setDiscovering(null);
+      setError((e as Error).message);
+    }
+  }
+
   // offer "search this area" once the map has moved away from the last search
   const moved = !!(center && mapCenter && metersBetween(center, mapCenter) > radius * 0.3);
 
@@ -318,7 +385,19 @@ export default function Nearby() {
   return (
     <SafeAreaView style={styles.wrap} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.title}>{placeName ? placeName : 'Nearby'}</Text>
+        <Text style={styles.title} numberOfLines={1}>
+          {placeName ? placeName : 'Nearby'}
+        </Text>
+        <Pressable
+          style={[styles.addBtn, styles.discoverBtn, !!discovering && { opacity: 0.6 }]}
+          onPress={discover}
+          disabled={!!discovering}
+          accessibilityLabel="Discover places here">
+          <Text style={styles.addText}>Discover</Text>
+        </Pressable>
+        <Pressable style={styles.addBtn} onPress={() => setShowAdd(true)} accessibilityLabel="Add a place">
+          <Text style={styles.addText}>+ Add</Text>
+        </Pressable>
       </View>
 
       <View style={styles.searchRow}>
@@ -337,22 +416,26 @@ export default function Nearby() {
         />
         {searching && <ActivityIndicator style={{ marginLeft: 8 }} />}
       </View>
+      {/* suggestions hang over whatever is below (map or list), so they work with the map hidden too */}
+      <View style={styles.suggestAnchor}>
+      {suggestions.length > 0 && (
+        <View style={styles.suggestBox}>
+          {suggestions.map((sg) => (
+            <Pressable
+              key={sg.key}
+              onPress={() => choose(sg)}
+              style={({ pressed }) => [styles.suggestRow, pressed && { backgroundColor: colors.line }]}>
+              <Text style={styles.suggestName}>{sg.label}</Text>
+              {!!sg.detail && <Text style={styles.suggestDetail}>{sg.detail}</Text>}
+            </Pressable>
+          ))}
+          <Text style={styles.osm}>Suggestions © OpenStreetMap contributors</Text>
+        </View>
+      )}
+      </View>
 
+      {mapOpen && (
       <View style={styles.mapWrap}>
-        {suggestions.length > 0 && (
-          <View style={styles.suggestBox}>
-            {suggestions.map((sg) => (
-              <Pressable
-                key={sg.key}
-                onPress={() => choose(sg)}
-                style={({ pressed }) => [styles.suggestRow, pressed && { backgroundColor: colors.line }]}>
-                <Text style={styles.suggestName}>{sg.label}</Text>
-                {!!sg.detail && <Text style={styles.suggestDetail}>{sg.detail}</Text>}
-              </Pressable>
-            ))}
-            <Text style={styles.osm}>Suggestions © OpenStreetMap contributors</Text>
-          </View>
-        )}
         {center && (
           <MapView
             ref={mapRef}
@@ -398,9 +481,24 @@ export default function Nearby() {
           <Text style={styles.locateText}>◎</Text>
         </Pressable>
       </View>
+      )}
 
       {/* radius, groups, and a Filters button; wraps on narrow phones */}
       <View style={styles.controls}>
+        <Pressable onPress={toggleMap} style={styles.toggle} hitSlop={4}>
+          <Text style={styles.toggleText}>{mapOpen ? 'Hide map' : 'Map'}</Text>
+        </Pressable>
+        {!mapOpen && (
+          <Pressable
+            onPress={() => {
+              setQuery('');
+              locate();
+            }}
+            style={styles.toggle}
+            accessibilityLabel="My location">
+            <Text style={[styles.toggleText, { color: colors.accent }]}>◎</Text>
+          </Pressable>
+        )}
         <View style={styles.segment}>
           {RADII.map((r) => (
             <Pressable key={r} onPress={() => setRadius(r)} style={[styles.segItem, radius === r && styles.segOn]}>
@@ -430,6 +528,21 @@ export default function Nearby() {
 
       {showFilters && (
         <View style={styles.filters}>
+          <View style={styles.filterRow}>
+            <Text style={styles.filterLabel}>Sort</Text>
+            <View style={styles.segment}>
+              {(['near', 'match'] as const).map((s) => (
+                <Pressable key={s} onPress={() => chooseSort(s)} style={[styles.segItem, sort === s && styles.segOn]}>
+                  <Text style={[styles.segText, sort === s && styles.segTextOn]}>{s === 'near' ? 'Nearest' : 'Best match'}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+          {sort === 'match' && !merged.some((p) => p.score != null) && (
+            <Text style={styles.hint}>
+              No taste scores here yet, so Best match only puts picks first. Scores come from match.py (run weekly).
+            </Text>
+          )}
           <View style={styles.filterRow}>
             {KINDS.map((k) => (
               <Pressable key={k.key} onPress={() => setKind(k.key)} style={[styles.toggle, kind === k.key && styles.filterOn]}>
@@ -463,6 +576,12 @@ export default function Nearby() {
             Location is off, so this shows San Francisco. Tap to turn it on in Settings, or type a city above.
           </Text>
         </Pressable>
+      )}
+      {discovering && (
+        <View style={styles.discovering}>
+          <ActivityIndicator size="small" color={colors.pick} />
+          <Text style={styles.discoveringText}>{discovering}</Text>
+        </View>
       )}
       {error && <Text style={styles.error}>{error}</Text>}
 
@@ -517,7 +636,26 @@ export default function Nearby() {
         onHide={hide}
         onMove={move}
         onPick={pickAction}
+        onLogVisit={(p) => {
+          setSelected(null); // iOS can't stack two sheets: close the card, then open the visit form
+          setTimeout(() => setVisitFor(p), 400);
+        }}
+        visitsKey={visitsKey}
         onDetails={(gid, d) => setDetails((old) => ({ ...old, [gid]: d }))}
+      />
+      <LogVisit
+        place={visitFor}
+        onClose={() => setVisitFor(null)}
+        onSaved={() => {
+          setVisitsKey((n) => n + 1);
+          setReload((n) => n + 1);
+        }}
+      />
+      <AddPlace
+        visible={showAdd}
+        near={mapCenter ?? center}
+        onClose={() => setShowAdd(false)}
+        onSaved={() => setReload((n) => n + 1)}
       />
       <HiddenList visible={showHidden} onClose={() => setShowHidden(false)} onChanged={() => setReload((n) => n + 1)} />
     </SafeAreaView>
@@ -540,6 +678,11 @@ function Row({ place, onPress }: { place: NearbyPlace; onPress: () => void }) {
         <Text style={styles.meta} numberOfLines={1}>
           {[placeLabel(place), cats, facts].filter(Boolean).join(' · ')}
         </Text>
+        {place.kind === 'pick' && !!place.why && (
+          <Text style={styles.why} numberOfLines={1}>
+            {place.why}
+          </Text>
+        )}
         {!!place.note && (
           <Text style={styles.note} numberOfLines={2}>
             {place.note}
@@ -559,8 +702,13 @@ const shadow = {
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
-  header: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 6 },
-  title: { fontSize: 28, fontWeight: '700', color: colors.text },
+  header: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 6, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  title: { flex: 1, fontSize: 28, fontWeight: '700', color: colors.text },
+  addBtn: { backgroundColor: colors.accent, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 7 },
+  addText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  discoverBtn: { backgroundColor: colors.pick },
+  discovering: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 8, backgroundColor: '#FFF4E3' },
+  discoveringText: { flex: 1, fontSize: 14, color: colors.text },
   searchRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingBottom: 8 },
   search: {
     flex: 1,
@@ -574,6 +722,7 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   mapWrap: { height: '33%', backgroundColor: colors.line },
+  suggestAnchor: { zIndex: 20, elevation: 20 },
   suggestBox: {
     position: 'absolute',
     top: 0,
@@ -662,6 +811,7 @@ const styles = StyleSheet.create({
   },
   filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
   hint: { fontSize: 13, color: colors.muted },
+  filterLabel: { fontSize: 13, fontWeight: '600', color: colors.muted, marginRight: 2 },
   notice: { margin: 16, marginBottom: 0, padding: 12, borderRadius: 10, backgroundColor: '#FFF1E0' },
   noticeText: { color: colors.text, fontSize: 14 },
   error: { color: colors.danger, paddingHorizontal: 16, paddingTop: 8 },
@@ -672,6 +822,7 @@ const styles = StyleSheet.create({
   dist: { fontSize: 14, color: colors.muted },
   meta: { fontSize: 14, color: colors.muted },
   note: { fontSize: 14, color: colors.text },
+  why: { fontSize: 14, color: colors.pick, fontWeight: '600' },
   sep: { height: StyleSheet.hairlineWidth, backgroundColor: colors.line, marginLeft: 38 },
   empty: { textAlign: 'center', color: colors.muted, marginTop: 24, paddingHorizontal: 24 },
   footer: { flexDirection: 'row', justifyContent: 'center', gap: 32, marginTop: 24, padding: 8 },

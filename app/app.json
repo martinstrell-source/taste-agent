@@ -29,6 +29,13 @@
         {
           "locationWhenInUsePermission": "Taste Agent uses your location to show saved places and new picks near you."
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Taste Agent reads photos you choose to find the places in them.",
+          "cameraPermission": "Taste Agent uses the camera to read the sign of a place you want to save."
+        }
       ]
     ],
     "scheme": "tasteagent",

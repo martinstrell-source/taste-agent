@@ -11,6 +11,7 @@ const LIST_LABELS: Record<string, string> = {
   favorites: 'Favorite',
   want_to_go: 'Want to go',
   captured: 'Added',
+  visited: 'Been there',
 };
 
 export function placeLabel(p: NearbyPlace): string {
@@ -121,4 +122,9 @@ export function sourceLine(p: NearbyPlace): string | null {
     return `From your Google ${list} list`;
   }
   return p.added_at ? `Saved ${shortDate(p.added_at)}` : null;
+}
+
+// Waze app if installed, otherwise the Waze web page; starts navigation to the place
+export function wazeUrl(p: NearbyPlace): string {
+  return `https://waze.com/ul?ll=${p.place_lat},${p.place_lng}&navigate=yes`;
 }

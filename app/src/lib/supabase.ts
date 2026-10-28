@@ -48,6 +48,9 @@ export type NearbyPlace = {
   opening_hours?: OpeningHours | null;
   added_at?: string | null; // saved (or, for picks, first seen)
   added_via?: string | null; // takeout | onboard | capture | pick
+  // added by schema_v6.sql: the pick's taste score for this user, and why
+  score?: number | null;
+  why?: string | null;
 };
 
 export type OpeningHours = {

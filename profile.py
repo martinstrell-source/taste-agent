@@ -211,6 +211,16 @@ def main():
             if sentiment in ("negative", "near_miss"):
                 flagged.append({"title": title, "sentiment": sentiment, "reason": reason})
 
+    # what the user ordered on visits they liked (Log a visit): those dishes count toward taste
+    for items_j, reaction in con.execute(
+            "SELECT items_ordered::text, reaction FROM visits WHERE user_id=%s AND items_ordered IS NOT NULL "
+            "AND reaction IN ('love', 'fine')", (uid,)).fetchall():
+        w = WEIGHT["love"] if reaction == "love" else WEIGHT["want"]
+        for it in json.loads(items_j or "[]"):
+            name = (it.get("name") or it.get("item") or "").strip().lower() if isinstance(it, dict) else ""
+            if name:
+                dishes[name] += w
+
     # stated preferences from signup
     dislikes = {"cuisines": [], "dishes": [], "formats": [], "other": []}
     for kind, value in prefs:

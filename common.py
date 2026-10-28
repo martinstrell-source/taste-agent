@@ -74,12 +74,12 @@ def cats_list(types):
 
 
 def ensure_schema(con):
-    """Check that schema.sql and schema_v2.sql to schema_v5.sql have been run."""
+    """Check that schema.sql and schema_v2.sql to schema_v7.sql have been run."""
     row = con.execute("SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
                       "WHERE n.nspname = 'public' AND p.proname = 'pt'").fetchone()
     if not row:
         raise SystemExit("The Supabase tables are missing or out of date. Run schema.sql, then schema_v2.sql, "
-                         "then schema_v3.sql to schema_v5.sql, in the Supabase SQL Editor.")
+                         "then schema_v3.sql to schema_v7.sql, in the Supabase SQL Editor.")
     row = con.execute("SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' "
                       "AND table_name = 'places' AND column_name = 'removed_at'").fetchone()
     if not row:
@@ -92,6 +92,14 @@ def ensure_schema(con):
                       "AND table_name = 'places' AND column_name = 'list_set_in_app'").fetchone()
     if not row:
         raise SystemExit("The places table is missing list_set_in_app. Run schema_v5.sql in the Supabase SQL Editor.")
+    row = con.execute("SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' "
+                      "AND table_name = 'pick_scores'").fetchone()
+    if not row:
+        raise SystemExit("The pick_scores table is missing. Run schema_v6.sql in the Supabase SQL Editor.")
+    row = con.execute("SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' "
+                      "AND table_name = 'discover_runs'").fetchone()
+    if not row:
+        raise SystemExit("The discover_runs table is missing. Run schema_v7.sql in the Supabase SQL Editor.")
 
 
 def get_user(con, handle):

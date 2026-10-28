@@ -331,6 +331,39 @@ def rank_places(con, user, prof):
     return ranked
 
 
+def short_reason(p):
+    """A short, plain reason for the app's Best match sort, built from the score's parts (no API call)."""
+    parts, bits = p["parts"], []
+    top = (p.get("top_cuisine") or "").replace("_", " ")
+    if top and parts.get("cuisine", 0) >= 0.4:
+        bits.append(f"{top.title()}, one of your top cuisines")
+    elif top and parts.get("cuisine", 0) >= 0.2:
+        bits.append(f"{top.title()}, which you save often")
+    if p.get("dish_match"):
+        bits.append(f"has {p['dish_match'][0]}, like dishes you've noted")
+    if parts.get("source", 0) >= 0.6:
+        bits.append(f"from {p['source']}, a source you trust")
+    if parts.get("distance", 0) >= 0.75:
+        bits.append("close to home")
+    if p.get("mention_type") == "opening":
+        bits.append("newly opened")
+    text = "; ".join(bits[:2])
+    return (text[0].upper() + text[1:]) if text else None
+
+
+def save_scores(con, uid, picks):
+    """Store each pick's score and reason for this user (the app's Best match sort reads them)."""
+    # replace only the weekly run's own scores; Discover here keeps its scores for places outside the Bay Area
+    con.execute("DELETE FROM pick_scores WHERE user_id=%s AND source = 'match'", (uid,))
+    with con.cursor() as cur:
+        cur.executemany("""INSERT INTO pick_scores (user_id, google_place_id, score, reason, source)
+                           VALUES (%s,%s,%s,%s,'match')
+                           ON CONFLICT (user_id, google_place_id) DO UPDATE SET score=excluded.score,
+                             reason=excluded.reason, source='match', updated_at=now()""",
+                        [(uid, p["google_place_id"], p["score"], short_reason(p)) for p in picks])
+    con.commit()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--user", required=True)
@@ -365,6 +398,8 @@ def main():
     print()
 
     picks = [p for p in ranked if p["known"] is None]
+    save_scores(con, user["uid"], picks)
+    print(f"Saved taste scores for {len(picks)} picks (the app's Best match sort)\n")
     if args.ratings:
         calls = add_ratings(con, picks[: args.ratings])
         print(f"(Google rating lookups this run: {calls}; the rest came from the cache)\n")

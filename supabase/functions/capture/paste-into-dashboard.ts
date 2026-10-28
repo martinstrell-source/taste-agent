@@ -1,0 +1,735 @@
+// ONE-FILE VERSION for pasting into the Supabase dashboard editor (Edge Functions > capture > Code).
+// Generated from index.ts + core.ts + discover.ts; edit those, not this.
+
+// Supabase Edge Function "capture": the server side of "Add a place".
+// Reads a link, pasted text, a photo or a friend's tip with Claude, then suggests Google matches.
+// Also reads a bill photo into a list of items (type "bill", for Log a visit), and runs
+// Discover here (type "discover", modes "google" and "web"): see discover.ts.
+// Keys stay here (secrets ANTHROPIC_API_KEY and GOOGLE_MAPS_API_KEY); the app never sees them.
+// Nothing is saved here: the app saves the place the user picks.
+//
+// Request (signed-in users only): POST { type, url?, text?, friend?, image_base64?, lat?, lng? }
+// Response: { source, places: [{ name, note, dishes, candidates: [...] }], message? }
+import { createClient } from 'npm:@supabase/supabase-js@2';
+
+
+export type Input = {
+  type: 'link' | 'text' | 'photo' | 'friend' | 'bill' | 'discover';
+  url?: string;
+  text?: string;
+  friend?: string; // for type "friend": who recommended it
+  image_base64?: string; // for type "photo": JPEG, already resized on the phone
+  lat?: number; // where the user is (or where the photo was taken)
+  lng?: number;
+};
+
+export type Candidate = {
+  google_place_id: string;
+  name: string;
+  address: string | null;
+  lat: number | null;
+  lng: number | null;
+  categories: string[];
+  is_food: boolean;
+  open: boolean;
+};
+
+export type Found = {
+  name: string;
+  location_hint: string;
+  note: string; // what the source said about it, in plain words
+  dishes: string[];
+  candidates: Candidate[];
+};
+
+export type Source = { type: string; name: string | null; url: string | null };
+export type Result = { source: Source; places: Found[]; message?: string };
+
+// ---------- reading a bill (Log a visit) ----------
+
+export type BillItem = { name: string; qty: number; price: number | null };
+export type Bill = { restaurant: string | null; date: string | null; items: BillItem[]; subtotal: number | null; tax: number | null; tip: number | null; total: number | null };
+
+export const BILL_PROMPT = `This is a photo of a restaurant bill or receipt. List what was ordered.
+Answer with JSON only:
+{"restaurant": "name on the bill or null", "date": "YYYY-MM-DD or null",
+ "items": [{"name": "item as written, cleaned up", "qty": 1, "price": 12.5}],
+ "subtotal": number or null, "tax": number or null, "tip": number or null, "total": number or null}
+Prices are the line totals in the bill's currency, numbers only. Leave out discounts, fees and payment lines.
+Never include card numbers, card types, authorization codes, names of the card holder or server, or any payment details.`;
+
+const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 100) / 100 : null);
+
+export function parseBill(text: string): Bill {
+  const raw = text.match(/```(?:json)?\s*([\s\S]*?)```/)?.[1] ?? text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
+  try {
+    const d = JSON.parse(raw);
+    const items = (Array.isArray(d.items) ? d.items : [])
+      .filter((i: { name?: unknown }) => typeof i?.name === 'string' && i.name.trim())
+      // nothing that looks like a card number survives, even if it slipped into an item name
+      .filter((i: { name: string }) => !/\d{4}[ -]?\d{4}|x{4}|\*{4}|visa|mastercard|amex|auth/i.test(i.name))
+      .slice(0, 40)
+      .map((i: { name: string; qty?: unknown; price?: unknown }) => ({
+        name: i.name.trim(),
+        qty: typeof i.qty === 'number' && i.qty > 0 ? i.qty : 1,
+        price: num(i.price),
+      }));
+    const date = typeof d.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.date) ? d.date : null;
+    return {
+      restaurant: typeof d.restaurant === 'string' ? d.restaurant : null,
+      date, items, subtotal: num(d.subtotal), tax: num(d.tax), tip: num(d.tip), total: num(d.total),
+    };
+  } catch {
+    return { restaurant: null, date: null, items: [], subtotal: null, tax: null, tip: null, total: null };
+  }
+}
+
+export type Deps = {
+  fetchPage: (url: string) => Promise<{ finalUrl: string; status: number; html: string }>;
+  claude: (content: unknown[], noSystem?: boolean) => Promise<string>; // returns Claude's text answer
+  googleSearch: (query: string, bias?: { lat: number; lng: number }) => Promise<Record<string, unknown>[]>;
+  shorthand?: { term: string; name: string; type: string }[]; // the user's own names ("A" = Alex)
+};
+
+const MAX_PLACES = 10;
+const FOOD = /restaurant|food|cafe|coffee|bakery|bar|pub|brewery|winery|meal_|ice_cream|dessert|tea|juice|deli|market|confectionery|donut|bagel/;
+
+// ---------- reading a link ----------
+
+export function isMapsUrl(u: string): boolean {
+  return /^https?:\/\/(www\.)?(google\.[a-z.]+\/maps|maps\.google\.|maps\.app\.goo\.gl|goo\.gl\/maps)/i.test(u);
+}
+
+// "https://www.google.com/maps/place/Taste+of+Urumqi/@37.79,-122.41,17z/..." -> name and point
+export function parseMapsUrl(u: string): { name: string | null; lat: number | null; lng: number | null } {
+  let name: string | null = null;
+  const m = u.match(/\/maps\/place\/([^/@?]+)/);
+  if (m) name = decodeURIComponent(m[1].replace(/\+/g, ' ')).trim() || null;
+  if (!name) {
+    const q = u.match(/[?&]q=([^&]+)/);
+    if (q) name = decodeURIComponent(q[1].replace(/\+/g, ' ')).trim() || null;
+  }
+  const at = u.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/) ?? u.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
+  return { name, lat: at ? Number(at[1]) : null, lng: at ? Number(at[2]) : null };
+}
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+}
+
+// Title, description, site name and readable text from a page
+export function pageText(html: string, limit = 15000): { title: string; site: string; text: string } {
+  const meta = (prop: string) => {
+    const re = new RegExp(`<meta[^>]+(?:property|name)=["']${prop}["'][^>]*content=["']([^"']*)["']`, 'i');
+    const re2 = new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]*(?:property|name)=["']${prop}["']`, 'i');
+    return decodeEntities((html.match(re)?.[1] ?? html.match(re2)?.[1] ?? '').trim());
+  };
+  const title = meta('og:title') || decodeEntities(html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() ?? '');
+  const site = meta('og:site_name');
+  const desc = meta('og:description') || meta('description');
+  const body = decodeEntities(
+    html
+      .replace(/<(script|style|noscript|svg|header|footer|nav)[\s\S]*?<\/\1>/gi, ' ')
+      .replace(/<[^>]+>/g, ' '),
+  ).replace(/\s+/g, ' ').trim();
+  return { title, site, text: [title, desc, body].filter(Boolean).join('\n\n').slice(0, limit) };
+}
+
+// ---------- asking Claude ----------
+
+export const SYSTEM = `You help someone save food and drink places they want to try. From what they give you
+(a web page, pasted text, a friend's tip, or a photo), list each specific restaurant, cafe, bakery, bar,
+food truck or food shop it names or shows. Skip places only mentioned in passing (as a comparison, or
+"formerly X"). For a storefront photo, read the business name from the sign. For a screenshot, read the text.
+
+Answer with JSON only, no other text:
+{"source": {"type": "person" | "publication" | "community" | "creator" | "walk_by" | "other", "name": "..." or null},
+ "places": [{"name": "...", "location_hint": "neighborhood, street or city if given, else empty",
+             "note": "one short sentence in your own words: what it is and what was said about it",
+             "dishes": ["dishes or drinks named for this place"]}]}
+At most 10 places. If there are none, return an empty list.`;
+
+export function parseClaude(text: string): { source: { type: string; name: string | null }; places: Omit<Found, 'candidates'>[] } {
+  const raw = text.match(/```(?:json)?\s*([\s\S]*?)```/)?.[1] ?? text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
+  try {
+    const d = JSON.parse(raw);
+    const places = (Array.isArray(d.places) ? d.places : [])
+      .filter((p: { name?: unknown }) => typeof p?.name === 'string' && p.name.trim())
+      .slice(0, MAX_PLACES)
+      .map((p: { name: string; location_hint?: string; note?: string; dishes?: unknown }) => ({
+        name: p.name.trim(),
+        location_hint: (p.location_hint ?? '').trim(),
+        note: (p.note ?? '').trim(),
+        dishes: Array.isArray(p.dishes) ? p.dishes.filter((x): x is string => typeof x === 'string').slice(0, 8) : [],
+      }));
+    return { source: { type: d.source?.type ?? 'other', name: d.source?.name ?? null }, places };
+  } catch {
+    return { source: { type: 'other', name: null }, places: [] };
+  }
+}
+
+// ---------- matching on Google ----------
+
+export function toCandidate(g: Record<string, unknown>): Candidate | null {
+  const id = g.id as string | undefined;
+  if (!id) return null;
+  const loc = (g.location ?? {}) as { latitude?: number; longitude?: number };
+  const types = (g.types as string[] | undefined) ?? [];
+  return {
+    google_place_id: id,
+    name: ((g.displayName as { text?: string } | undefined)?.text ?? '').trim(),
+    address: (g.formattedAddress as string | undefined) ?? null,
+    lat: loc.latitude ?? null,
+    lng: loc.longitude ?? null,
+    categories: types,
+    is_food: types.some((t) => FOOD.test(t)),
+    open: ((g.businessStatus as string | undefined) ?? 'OPERATIONAL') === 'OPERATIONAL',
+  };
+}
+
+async function matchOnGoogle(name: string, hint: string, bias: { lat: number; lng: number } | undefined, deps: Deps) {
+  const results = await deps.googleSearch([name, hint].filter(Boolean).join(' '), bias);
+  return results
+    .map(toCandidate)
+    .filter((c): c is Candidate => !!c)
+    .sort((a, b) => Number(b.is_food) - Number(a.is_food) || Number(b.open) - Number(a.open)) // food and open first
+    .slice(0, 3);
+}
+
+// ---------- the whole thing ----------
+
+export async function readBill(input: Input, deps: Deps): Promise<{ bill: Bill; message?: string }> {
+  if (!input.image_base64) return { bill: parseBill(''), message: 'No photo received.' };
+  const text = await deps.claude([
+    { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: input.image_base64 } },
+    { type: 'text', text: BILL_PROMPT },
+  ], true);
+  const bill = parseBill(text);
+  return { bill, message: bill.items.length ? undefined : "Couldn't read items from that photo. Try a sharper, flatter shot." };
+}
+
+export async function capture(input: Input, deps: Deps): Promise<Result> {
+  const bias = typeof input.lat === 'number' && typeof input.lng === 'number' ? { lat: input.lat, lng: input.lng } : undefined;
+  const shorthand = (deps.shorthand ?? []).map((s) => `"${s.term}" means ${s.name} (${s.type})`).join('; ');
+  const known = shorthand ? `\nThe user's own shorthand: ${shorthand}.` : '';
+
+  if (input.type === 'link') {
+    const url = (input.url ?? '').trim();
+    if (!/^https?:\/\//i.test(url)) return { source: { type: 'other', name: null, url: null }, places: [], message: 'That doesn\'t look like a link.' };
+    const page = await deps.fetchPage(url).catch(() => null);
+    const finalUrl = page?.finalUrl ?? url;
+
+    // a Google Maps link names one place: no need for Claude
+    if (isMapsUrl(finalUrl) || isMapsUrl(url)) {
+      const m = parseMapsUrl(finalUrl);
+      const name = m.name ?? (page ? pageText(page.html).title.replace(/ - Google Maps$/, '') : '');
+      if (!name) return { source: { type: 'other', name: 'Google Maps', url }, places: [], message: 'Could not read that Maps link. Try pasting the place name.' };
+      const near = m.lat !== null && m.lng !== null ? { lat: m.lat, lng: m.lng } : bias;
+      return {
+        source: { type: 'other', name: 'Google Maps', url },
+        places: [{ name, location_hint: '', note: '', dishes: [], candidates: await matchOnGoogle(name, '', near, deps) }],
+      };
+    }
+
+    const readable = page && page.status < 400 ? pageText(page.html) : null;
+    if (!readable || readable.text.length < 200) {
+      return {
+        source: { type: 'other', name: null, url },
+        places: [],
+        message: 'That site doesn\'t let apps read it (Instagram often does this). Paste the caption or text, or add a screenshot as a photo.',
+      };
+    }
+    const answer = await deps.claude([
+      { type: 'text', text: `A web page the user wants to save places from.${known}\nURL: ${url}\nSite: ${readable.site}\n\n${readable.text}` },
+    ]);
+    const parsed = parseClaude(answer);
+    const places = await Promise.all(parsed.places.map(async (p) => ({ ...p, candidates: await matchOnGoogle(p.name, p.location_hint, bias, deps) })));
+    return {
+      source: { type: parsed.source.type === 'other' ? 'publication' : parsed.source.type, name: readable.site || parsed.source.name || new URL(url).hostname.replace(/^www\./, ''), url },
+      places,
+      message: places.length ? undefined : 'No places found on that page.',
+    };
+  }
+
+  let content: unknown[];
+  if (input.type === 'photo') {
+    if (!input.image_base64) return { source: { type: 'walk_by', name: null, url: null }, places: [], message: 'No photo received.' };
+    content = [
+      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: input.image_base64 } },
+      { type: 'text', text: `A photo the user took or a screenshot they saved: a storefront, menu, or a post about a place.${known}${input.text ? `\nThey added: ${input.text}` : ''}` },
+    ];
+  } else {
+    const text = (input.text ?? '').trim();
+    if (!text) return { source: { type: 'other', name: null, url: null }, places: [], message: 'Nothing to read yet.' };
+    const who = input.type === 'friend' && input.friend ? `A recommendation from ${input.friend.trim()}.` : 'Text the user pasted (a post, comment, message or note).';
+    content = [{ type: 'text', text: `${who}${known}\n\n${text.slice(0, 15000)}` }];
+  }
+
+  const parsed = parseClaude(await deps.claude(content));
+  const places = await Promise.all(parsed.places.map(async (p) => ({ ...p, candidates: await matchOnGoogle(p.name, p.location_hint, bias, deps) })));
+  const source: Source =
+    input.type === 'friend'
+      ? { type: 'person', name: input.friend?.trim() || parsed.source.name, url: null }
+      : input.type === 'photo'
+        ? { type: parsed.source.type === 'other' ? 'walk_by' : parsed.source.type, name: parsed.source.name, url: null }
+        : { type: parsed.source.type, name: parsed.source.name, url: null };
+  return { source, places, message: places.length ? undefined : 'No places found. Try adding the name or a bit more text.' };
+}
+
+// ---------- Discover here ----------
+// "Discover here": find places in the area on screen that fit this user's taste.
+// Two modes, called separately by the app so quick results show while the slow ones run:
+//   google  seconds: Google search for the user's top cuisines in the area, well-rated or new places
+//   web     a minute: Claude searches the web (local food press, "best new" lists) for the area
+// Results go into the shared pool of picks (candidates), so they show in Nearby, and each one gets a
+// score and reason for this user (pick_scores). Areas are cached for 30 days, shared by all users.
+// Pure logic with injected calls so it can be tested; index.ts wires it up.
+
+export type DiscoverInput = { type: 'discover'; mode: 'google' | 'web'; lat: number; lng: number; radius_m?: number; area_name?: string };
+
+export type DPlace = Record<string, unknown>;
+export type CandidateRow = {
+  item_id: string;
+  source: string;
+  item_title: string;
+  item_link: string | null;
+  name: string;
+  location_hint: string;
+  mention_type: string;
+  cuisine: string | null;
+  dishes: string[];
+  what_it_says: string;
+  google_place_id: string;
+  google_name: string;
+  address: string | null;
+  location: string | null; // EWKT point
+  categories: string[];
+  primary_type: string | null;
+  business_status: string;
+  maps_uri: string | null;
+  match_confidence: string;
+  is_food: boolean;
+  in_bay_area: boolean;
+  tone: string;
+};
+export type Score = { google_place_id: string; score: number; reason: string };
+
+export type DiscoverDeps = {
+  topCuisines: () => Promise<string[]>; // this user's, strongest first
+  knownIds: () => Promise<Set<string>>; // saved or reacted to: never suggested
+  cachedQueries: (areaKey: string, days: number) => Promise<Set<string>>; // item_ids searched recently
+  webRunsToday: () => Promise<number>;
+  googleSearch: (query: string, box: Box, rating: boolean) => Promise<DPlace[]>;
+  claudeWeb: (prompt: string) => Promise<{ text: string; searches: number }>;
+  save: (items: { item_id: string; source: string; title: string; link: string | null }[], rows: CandidateRow[], scores: Score[], areaKey: string, mode: string) => Promise<void>;
+  existingForArea: (areaKey: string, prefix: string) => Promise<{ google_place_id: string; cuisine: string | null; source: string }[]>;
+};
+
+export type Box = { low: { latitude: number; longitude: number }; high: { latitude: number; longitude: number } };
+
+export const CACHE_DAYS = 30;
+export const WEB_PER_DAY = 3;
+const TOO_BROAD = new Set(['american', 'asian', 'european', 'fusion', 'cafe', 'restaurant', 'breakfast', 'brunch']);
+const FOOD_D = /restaurant|food|cafe|coffee|bakery|bar|pub|brewery|winery|meal_|ice_cream|dessert|tea|juice|deli|confectionery|donut|bagel/;
+
+// about 5 km cells: everyone near the same spot shares one cache entry
+export function areaKey(lat: number, lng: number): string {
+  return `${(Math.round(lat * 20) / 20).toFixed(2)},${(Math.round(lng * 20) / 20).toFixed(2)}`;
+}
+
+export function boxAround(lat: number, lng: number, radiusM: number): Box {
+  const dLat = radiusM / 111_000;
+  const dLng = radiusM / (111_000 * Math.max(0.2, Math.cos((lat * Math.PI) / 180)));
+  return { low: { latitude: lat - dLat, longitude: lng - dLng }, high: { latitude: lat + dLat, longitude: lng + dLng } };
+}
+
+function cityOf(address: string | null | undefined): string {
+  const parts = (address ?? '').split(',').map((x) => x.trim());
+  return parts.length >= 3 ? parts[parts.length - 3] : parts[0] ?? '';
+}
+
+function nice(c: string): string {
+  return c.replace(/_/g, ' ').replace(/\//g, ' or ');
+}
+
+export function toRow(g: DPlace, itemId: string, source: string, title: string, link: string | null, extra: Partial<CandidateRow>): CandidateRow | null {
+  const id = g.id as string | undefined;
+  if (!id) return null;
+  const loc = (g.location ?? {}) as { latitude?: number; longitude?: number };
+  const types = (g.types as string[] | undefined) ?? [];
+  const name = ((g.displayName as { text?: string } | undefined)?.text ?? '').trim();
+  return {
+    item_id: itemId,
+    source,
+    item_title: title,
+    item_link: link,
+    name,
+    location_hint: cityOf(g.formattedAddress as string),
+    mention_type: 'discovery',
+    cuisine: null,
+    dishes: [],
+    what_it_says: '',
+    google_place_id: id,
+    google_name: name,
+    address: (g.formattedAddress as string) ?? null,
+    location: loc.latitude != null && loc.longitude != null ? `SRID=4326;POINT(${loc.longitude} ${loc.latitude})` : null,
+    categories: types,
+    primary_type: (g.primaryType as string) ?? null,
+    business_status: (g.businessStatus as string) ?? 'OPERATIONAL',
+    maps_uri: (g.googleMapsUri as string) ?? null,
+    match_confidence: 'good',
+    is_food: types.some((t) => FOOD_D.test(t)),
+    in_bay_area: false, // Discover here results stay out of the weekly Bay Area picks; Nearby shows them by distance
+    tone: 'neutral',
+    ...extra,
+  };
+}
+
+function quality(rating: number | undefined, count: number | undefined): number {
+  if (!rating) return 0.5;
+  const k = 30;
+  const c = count ?? 0;
+  return ((rating * c + 4.2 * k) / (c + k) - 3.8) / 1.2; // about 0 to 1
+}
+
+// ---------- quick: Google ----------
+
+export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps) {
+  const key = areaKey(input.lat, input.lng);
+  const box = boxAround(input.lat, input.lng, Math.min(Math.max(input.radius_m ?? 6000, 2000), 15000));
+  const cuisines = (await deps.topCuisines()).filter((c) => !TOO_BROAD.has(c)).slice(0, 5);
+  const queries = [...cuisines.map((c) => ({ c, q: `${nice(c)} restaurant` })), { c: '', q: 'best restaurants' }];
+  const known = await deps.knownIds();
+  const cached = await deps.cachedQueries(key, CACHE_DAYS);
+
+  const items: { item_id: string; source: string; title: string; link: string | null }[] = [];
+  const rows: CandidateRow[] = [];
+  const scores = new Map<string, Score>();
+  let searched = 0;
+
+  await Promise.all(
+    queries.map(async ({ c, q }, qi) => {
+      const itemId = `here:${key}:g:${c || 'best'}`;
+      let places: DPlace[] = [];
+      if (cached.has(itemId)) {
+        // searched recently for this area: reuse what's in the pool
+        const prev = await deps.existingForArea(key, itemId);
+        places = prev.map((p) => ({ id: p.google_place_id, _cached: true }));
+      } else {
+        places = await deps.googleSearch(q, box, true).catch(() => []);
+        searched += 1;
+        items.push({ item_id: itemId, source: 'Google Maps search', title: c ? `${nice(c)} places near ${input.area_name ?? 'here'}` : `Well-rated places near ${input.area_name ?? 'here'}`, link: null });
+      }
+      places.forEach((g, rank) => {
+        const id = g.id as string;
+        if (!id || known.has(id)) return;
+        if (!g._cached) {
+          const types = (g.types as string[] | undefined) ?? [];
+          const count = (g.userRatingCount as number | undefined) ?? 0;
+          if ((g.businessStatus ?? 'OPERATIONAL') !== 'OPERATIONAL' || !types.some((t) => FOOD_D.test(t))) return;
+          if (count >= 20 && ((g.rating as number | undefined) ?? 0) < 4.3) return;
+          const row = toRow(g, itemId, 'Google Maps search', c ? `${nice(c)} near ${input.area_name ?? 'here'}` : 'Well rated nearby', null, {
+            cuisine: c || null,
+            what_it_says: count < 20 ? `New: ${count} reviews on Google.` : `${(g.rating as number).toFixed(1)} stars from ${count} reviews on Google.`,
+          });
+          if (row) rows.push(row);
+        }
+        // fit: earlier cuisines and higher in the results score higher; quality from Google rating
+        const fit = c ? (1 - qi / (queries.length + 1)) * (1 - rank / 25) : 0.35 * (1 - rank / 25);
+        const score = 0.6 * fit + 0.4 * quality(g.rating as number, g.userRatingCount as number);
+        const reason = c ? `${nice(c)[0].toUpperCase()}${nice(c).slice(1)}, one of your top cuisines` : 'Well rated nearby';
+        const prev = scores.get(id);
+        if (!prev || score > prev.score) scores.set(id, { google_place_id: id, score: Math.round(score * 1000) / 1000, reason });
+      });
+    }),
+  );
+
+  await deps.save(items, rows, [...scores.values()], key, 'google');
+  return { mode: 'google', area: key, searched, places: scores.size };
+}
+
+// ---------- slow: the web ----------
+
+export function webPrompt(area: string, cuisines: string[]): string {
+  return `Find restaurants, cafes, bakeries and bars in or near ${area} that a visitor with this taste would want to try.
+Their favorite cuisines: ${cuisines.map(nice).join(', ') || 'varied'}.
+Use the local food press, "best new restaurants" lists, local guides and recent reviews. Prefer places that opened or
+got press in the last year, and lesser-known places that fit their cuisines, over famous tourist standbys.
+Places must be open now.
+
+Return up to 15 places. End your answer with a JSON array in a \`\`\`json block, one object per place:
+{"name": "...", "city": "...", "cuisine": "...", "dishes": ["..."],
+ "why": "one sentence in your own words on why it fits this person (no quotes from articles)",
+ "source": "publication name", "source_title": "article title", "source_url": "..."}`;
+}
+
+export function parseWeb(text: string): { name: string; city: string; cuisine: string; dishes: string[]; why: string; source: string; source_title: string; source_url: string }[] {
+  const blocks = [...text.matchAll(/```json\s*([\s\S]*?)```/g)];
+  try {
+    const d = JSON.parse(blocks.length ? blocks[blocks.length - 1][1] : text);
+    return (Array.isArray(d) ? d : [])
+      .filter((p) => typeof p?.name === 'string' && p.name.trim())
+      .slice(0, 15)
+      .map((p) => ({
+        name: String(p.name).trim(),
+        city: String(p.city ?? '').trim(),
+        cuisine: String(p.cuisine ?? '').trim().toLowerCase(),
+        dishes: Array.isArray(p.dishes) ? p.dishes.filter((x: unknown) => typeof x === 'string').slice(0, 6) : [],
+        why: String(p.why ?? '').trim().slice(0, 300),
+        source: String(p.source ?? 'Web').trim(),
+        source_title: String(p.source_title ?? '').trim(),
+        source_url: String(p.source_url ?? '').trim(),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function similar(a: string, b: string): boolean {
+  const n = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\b(the|restaurant|cafe|bar)\b/g, '').trim();
+  const x = n(a), y = n(b);
+  return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
+}
+
+export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps) {
+  const key = areaKey(input.lat, input.lng);
+  const box = boxAround(input.lat, input.lng, Math.min(Math.max(input.radius_m ?? 6000, 3000), 20000));
+  const cached = await deps.cachedQueries(key, CACHE_DAYS);
+  const known = await deps.knownIds();
+  const cuisines = (await deps.topCuisines()).filter((c) => !TOO_BROAD.has(c)).slice(0, 6);
+
+  if ([...cached].some((id) => id.startsWith(`here:${key}:w:`))) {
+    // the web was searched for this area recently (by anyone): reuse, and score for this user
+    const prev = await deps.existingForArea(key, `here:${key}:w:`);
+    const scores = prev
+      .filter((p) => !known.has(p.google_place_id))
+      .map((p) => ({ google_place_id: p.google_place_id, score: 0.55, reason: `From ${p.source}` }));
+    await deps.save([], [], scores, key, 'web-cached');
+    return { mode: 'web', area: key, cached: true, places: scores.length };
+  }
+  if ((await deps.webRunsToday()) >= WEB_PER_DAY) {
+    return { mode: 'web', area: key, places: 0, message: `Web search is limited to ${WEB_PER_DAY} new areas a day. The quick results are still here.` };
+  }
+
+  const { text, searches } = await deps.claudeWeb(webPrompt(input.area_name || `the area around ${input.lat.toFixed(3)}, ${input.lng.toFixed(3)}`, cuisines));
+  const found = parseWeb(text);
+  const items: { item_id: string; source: string; title: string; link: string | null }[] = [];
+  const rows: CandidateRow[] = [];
+  const scores: Score[] = [];
+  await Promise.all(
+    found.map(async (f, i) => {
+      if (!/^https?:\/\//.test(f.source_url)) return;
+      const res = await deps.googleSearch(`${f.name} ${f.city}`, box, false).catch(() => []);
+      const g = res.find((r) => similar(f.name, ((r.displayName as { text?: string } | undefined)?.text ?? '')));
+      if (!g || (g.businessStatus ?? 'OPERATIONAL') !== 'OPERATIONAL') return;
+      const itemId = `here:${key}:w:${f.source_url}`.slice(0, 500);
+      if (!items.some((x) => x.item_id === itemId)) items.push({ item_id: itemId, source: f.source, title: f.source_title || f.source, link: f.source_url });
+      const row = toRow(g, itemId, f.source, f.source_title || f.source, f.source_url, {
+        mention_type: 'list_entry', cuisine: f.cuisine || null, dishes: f.dishes, what_it_says: f.why, tone: 'positive',
+      });
+      if (!row || known.has(row.google_place_id)) return;
+      rows.push(row);
+      const liked = cuisines.some((c) => f.cuisine.includes(nice(c)) || nice(c).includes(f.cuisine));
+      scores.push({ google_place_id: row.google_place_id, score: Math.round((0.75 - i * 0.01 + (liked ? 0.1 : 0)) * 1000) / 1000, reason: liked ? `${f.cuisine[0]?.toUpperCase()}${f.cuisine.slice(1)}, a favorite of yours; from ${f.source}` : `From ${f.source}` });
+    }),
+  );
+  if (!items.length) items.push({ item_id: `here:${key}:w:none`, source: 'Web', title: 'No web results', link: null });
+  await deps.save(items, rows, scores, key, 'web');
+  return { mode: 'web', area: key, searches, places: scores.length };
+}
+
+// ---------- function ----------
+
+
+const URL_ = Deno.env.get('SUPABASE_URL')!;
+const firstKey = (json: string | undefined) => {
+  try {
+    const d = JSON.parse(json ?? '{}');
+    return d.default ?? Object.values(d)[0];
+  } catch {
+    return undefined;
+  }
+};
+const SECRET = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? firstKey(Deno.env.get('SUPABASE_SECRET_KEYS'));
+const PUBLIC = Deno.env.get('SUPABASE_ANON_KEY') ?? firstKey(Deno.env.get('SUPABASE_PUBLISHABLE_KEYS'));
+const GOOGLE_KEY = Deno.env.get('GOOGLE_MAPS_API_KEY');
+const ANTHROPIC_KEY = Deno.env.get('ANTHROPIC_API_KEY');
+const MODEL = 'claude-sonnet-5-5'; // reads photos and long pages well
+const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
+
+const cors = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+};
+
+async function fetchPage(url: string) {
+  const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en' }, redirect: 'follow' });
+  const html = (await r.text()).slice(0, 2_000_000);
+  return { finalUrl: r.url || url, status: r.status, html };
+}
+
+async function claude(content: unknown[], noSystem = false): Promise<string> {
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': ANTHROPIC_KEY!, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({ model: MODEL, max_tokens: 4000, ...(noSystem ? {} : { system: SYSTEM }), messages: [{ role: 'user', content }] }),
+  });
+  if (!r.ok) throw new Error(`Claude ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  const d = await r.json();
+  return (d.content ?? []).filter((b: { type: string }) => b.type === 'text').map((b: { text: string }) => b.text).join('');
+}
+
+// Discover here: Text Search inside the area's box; with rating fields when ranking by quality
+async function googleInBox(query: string, box: Box, rating: boolean) {
+  const fields = ['places.id', 'places.displayName', 'places.formattedAddress', 'places.location', 'places.types', 'places.primaryType', 'places.businessStatus', 'places.googleMapsUri'];
+  if (rating) fields.push('places.rating', 'places.userRatingCount', 'places.priceLevel');
+  const r = await fetch('https://places.googleapis.com/v1/places:searchText', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_KEY!, 'X-Goog-FieldMask': fields.join(',') },
+    body: JSON.stringify({ textQuery: query, pageSize: 20, locationRestriction: { rectangle: box } }),
+  });
+  if (!r.ok) return [];
+  return (await r.json()).places ?? [];
+}
+
+// Claude with web search; a long search turn can pause, so send it back to continue
+async function claudeWeb(prompt: string) {
+  const body: Record<string, unknown> = {
+    model: MODEL,
+    max_tokens: 8000,
+    messages: [{ role: 'user', content: prompt }],
+    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
+  };
+  let text = '';
+  let searches = 0;
+  for (let i = 0; i < 3; i++) {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': ANTHROPIC_KEY!, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error(`Claude ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    const d = await r.json();
+    searches += d.usage?.server_tool_use?.web_search_requests ?? 0;
+    text = (d.content ?? []).filter((b: { type: string }) => b.type === 'text').map((b: { text: string }) => b.text).join('');
+    if (d.stop_reason !== 'pause_turn') break;
+    body.messages = [{ role: 'user', content: prompt }, { role: 'assistant', content: d.content }];
+  }
+  return { text, searches };
+}
+
+async function googleSearch(query: string, bias?: { lat: number; lng: number }) {
+  const body: Record<string, unknown> = { textQuery: query, pageSize: 5 };
+  if (bias) body.locationBias = { circle: { center: { latitude: bias.lat, longitude: bias.lng }, radius: 30000 } };
+  const r = await fetch('https://places.googleapis.com/v1/places:searchText', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': GOOGLE_KEY!,
+      'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.types,places.businessStatus',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) return [];
+  return (await r.json()).places ?? [];
+}
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  if (!GOOGLE_KEY || !ANTHROPIC_KEY || !SECRET || !PUBLIC) {
+    return Response.json({ error: 'Function is missing ANTHROPIC_API_KEY, GOOGLE_MAPS_API_KEY or Supabase keys' }, { status: 500, headers: cors });
+  }
+  const asUser = createClient(URL_, PUBLIC, { global: { headers: { Authorization: req.headers.get('Authorization') ?? '' } } });
+  const { data: who } = await asUser.auth.getUser();
+  if (!who?.user) return Response.json({ error: 'Not signed in' }, { status: 401, headers: cors });
+
+  let input: Input;
+  try {
+    input = await req.json();
+  } catch {
+    return Response.json({ error: 'Send JSON' }, { status: 400, headers: cors });
+  }
+  if (!['link', 'text', 'photo', 'friend', 'bill', 'discover'].includes(input?.type)) {
+    return Response.json({ error: 'type must be link, text, photo, friend, bill or discover' }, { status: 400, headers: cors });
+  }
+  if ((input.image_base64?.length ?? 0) > 7_000_000) {
+    return Response.json({ error: 'Photo too large' }, { status: 413, headers: cors });
+  }
+
+  // the user's own shorthand ("A" = Alex) helps Claude read their notes and friends' names
+  const admin = createClient(URL_, SECRET, { auth: { persistSession: false } });
+  const { data: sh } = await admin.from('user_shorthand').select('term, name, type').eq('user_id', who.user.id);
+
+  try {
+    if ((input as unknown as DiscoverInput).type === 'discover') {
+      const d = input as unknown as DiscoverInput;
+      if (typeof d.lat !== 'number' || typeof d.lng !== 'number') {
+        return Response.json({ error: 'lat and lng are required' }, { status: 400, headers: cors });
+      }
+      const uid = who.user.id;
+      const ddeps: DiscoverDeps = {
+        topCuisines: async () => {
+          const { data } = await admin.from('user_profiles').select('profile').eq('user_id', uid).maybeSingle();
+          const prof = typeof data?.profile === 'string' ? JSON.parse(data.profile) : data?.profile;
+          return Object.keys(prof?.cuisines ?? {});
+        },
+        knownIds: async () => {
+          const [p, f] = await Promise.all([
+            admin.from('places').select('google_place_id').eq('user_id', uid).not('google_place_id', 'is', null),
+            admin.from('feedback').select('google_place_id').eq('user_id', uid),
+          ]);
+          return new Set([...(p.data ?? []), ...(f.data ?? [])].map((r) => r.google_place_id as string));
+        },
+        cachedQueries: async (key, days) => {
+          const since = new Date(Date.now() - days * 86_400_000).toISOString();
+          const { data } = await admin.from('feed_items').select('item_id').like('item_id', `here:${key}:%`).gte('fetched_at', since);
+          return new Set((data ?? []).map((r) => r.item_id as string));
+        },
+        webRunsToday: async () => {
+          const since = new Date(Date.now() - 86_400_000).toISOString();
+          const { count } = await admin.from('discover_runs').select('id', { count: 'exact', head: true }).eq('user_id', uid).eq('kind', 'web').gte('created_at', since);
+          return count ?? 0;
+        },
+        googleSearch: googleInBox,
+        claudeWeb,
+        existingForArea: async (_key, prefix) => {
+          const { data } = await admin.from('candidates').select('google_place_id, cuisine, source').like('item_id', `${prefix}%`).not('google_place_id', 'is', null);
+          return (data ?? []) as { google_place_id: string; cuisine: string | null; source: string }[];
+        },
+        save: async (items, rows, scores, key, mode) => {
+          // one row per key: a search can return two branches with the same name (the table's key is item_id + name)
+          const once = <T,>(xs: T[], k: (x: T) => string) => [...new Map(xs.map((x) => [k(x), x] as const)).values()].reverse();
+          items = once([...items].reverse(), (x) => x.item_id);
+          rows = once([...rows].reverse(), (r) => `${r.item_id}|${r.name}`);
+          scores = once([...scores].reverse(), (x) => x.google_place_id);
+          if (items.length) {
+            const now = new Date().toISOString();
+            await admin.from('feed_items').upsert(items.map((x) => ({ item_id: x.item_id, source: x.source, title: x.title, link: x.link, fetched_at: now, status: 'done' })), { onConflict: 'item_id' });
+          }
+          if (rows.length) {
+            const { error } = await admin.from('candidates').upsert(rows, { onConflict: 'item_id,name' });
+            if (error) {
+              // un-mark the searches so the next tap searches again instead of reusing an empty result
+              if (items.length) await admin.from('feed_items').delete().in('item_id', items.map((x) => x.item_id));
+              throw new Error(`saving places: ${error.message}`);
+            }
+          }
+          if (scores.length) {
+            await admin.from('pick_scores').upsert(scores.map((x) => ({ user_id: uid, google_place_id: x.google_place_id, score: x.score, reason: x.reason, source: 'discover', updated_at: new Date().toISOString() })), { onConflict: 'user_id,google_place_id' });
+          }
+          if (mode === 'web') await admin.from('discover_runs').insert({ user_id: uid, area_key: key, kind: 'web' });
+        },
+      };
+      const out = d.mode === 'web' ? await discoverWeb(d, ddeps) : await discoverGoogle(d, ddeps);
+      return Response.json(out, { headers: cors });
+    }
+    const deps = { fetchPage, claude, googleSearch, shorthand: sh ?? [] };
+    const result = input.type === 'bill' ? await readBill(input, deps) : await capture(input, deps);
+    return Response.json(result, { headers: cors });
+  } catch (e) {
+    return Response.json({ error: (e as Error).message }, { status: 502, headers: cors });
+  }
+});
