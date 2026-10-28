@@ -1,7 +1,7 @@
 // deno test supabase/functions/capture/discover_test.ts
 import { deepStrictEqual as eq, ok } from 'node:assert';
 
-import { areaKey, boxAround, type DiscoverDeps, discoverGoogle, discoverWeb, parseWeb } from './discover.ts';
+import { areaKey, boxAround, type DiscoverDeps, discoverGoogle, discoverWeb, matches, parseAreaProfile, parseWeb } from './discover.ts';
 
 const P = (id: string, name: string, types: string[], rating = 4.6, count = 120, status = 'OPERATIONAL') => ({
   id, displayName: { text: name }, formattedAddress: `1 Main St, Portland, OR 97201, USA`, location: { latitude: 45.52, longitude: -122.68 },
@@ -26,6 +26,10 @@ function deps(over: Partial<DiscoverDeps> = {}) {
     claudeWeb: async () => ({ text: 'Here you go.\n```json\n[{"name":"Lardo","city":"Portland","cuisine":"sandwiches","why":"Big pork sandwiches.","source":"Eater Portland","source_title":"Best sandwiches","source_url":"https://pdx.eater.com/x"},{"name":"No Link","city":"Portland","source_url":""}]\n```', searches: 4 }),
     save: async (items, rows, scores, _key, mode) => void saved.push({ items, rows, scores, mode }),
     existingForArea: async () => [{ google_place_id: 'W1', cuisine: 'sandwiches', source: 'Eater Portland' }],
+    home: async () => null,
+    getAreaProfile: async () => null,
+    saveAreaProfile: async () => {},
+    claudeText: async () => '',
     ...over,
   };
   return { d, saved, searches };
@@ -72,4 +76,67 @@ Deno.test('web: Claude finds, Google confirms; daily limit; cached areas reuse',
 Deno.test('parseWeb: tolerant of chatter, skips nameless entries', () => {
   eq(parseWeb('x ```json\n[{"name":"A","source_url":"https://a"},{"city":"B"}]\n```').map((p) => p.name), ['A']);
   eq(parseWeb('nothing'), []);
+});
+
+const BEIJING = '{"local":[{"name":"Peking roast duck","query":"peking roast duck restaurant","tags":["peking duck","roast duck","chinese"]},{"name":"Xinjiang food","query":"xinjiang restaurant","tags":["xinjiang","uyghur","central asian","chinese"]}],"strengths":[]}';
+
+Deno.test('away: local specialties first, your cuisines only if local, others only standouts; profile asked once', async () => {
+  const asked: string[] = [];
+  const savedProfiles: string[] = [];
+  const searches: string[] = [];
+  const { d, saved } = deps({
+    home: async () => ({ lat: 37.77, lng: -122.25 }),
+    claudeText: async (p) => (asked.push(p), 'Sure:\n' + BEIJING),
+    saveAreaProfile: async (k) => void savedProfiles.push(k),
+    googleSearch: async (q) => {
+      searches.push(q);
+      if (q.startsWith('peking')) return [P('D1', 'Duck House', ['chinese_restaurant'])];
+      if (q.startsWith('japanese')) return [P('J1', 'Ok Sushi', ['japanese_restaurant'], 4.5, 400), P('J2', 'Great Sushi', ['japanese_restaurant'], 4.8, 900)];
+      return [];
+    },
+  });
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 39.9, lng: 116.4, area_name: 'Beijing' }, d);
+  eq(asked.length, 1);
+  eq(savedProfiles, ['40.0,116.5']);
+  ok(searches.includes('peking roast duck restaurant') && searches.includes('xinjiang restaurant'));
+  ok(searches.includes('uyghur or central asian restaurant')); // yours and local
+  ok(!searches.includes('korean restaurant') && !searches.includes('best restaurants'));
+  const ids = saved[0].scores.map((s) => s.google_place_id).sort();
+  eq(ids, ['D1', 'J2']); // ordinary sushi dropped, standout kept
+  eq(saved[0].scores.find((s) => s.google_place_id === 'D1')?.reason, 'Local specialty: Peking roast duck');
+  ok(saved[0].scores.find((s) => s.google_place_id === 'D1')!.score > saved[0].scores.find((s) => s.google_place_id === 'J2')!.score);
+});
+
+Deno.test('away: a cached city profile is reused; near home nothing is asked', async () => {
+  let asked = 0;
+  const p = parseAreaProfile(BEIJING)!;
+  const a = deps({ home: async () => ({ lat: 37.77, lng: -122.25 }), getAreaProfile: async () => p, claudeText: async () => (asked++, '') });
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 39.9, lng: 116.4 }, a.d);
+  const b = deps({ home: async () => ({ lat: 45.4, lng: -122.6 }), claudeText: async () => (asked++, '') });
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, b.d);
+  eq(asked, 0);
+  ok(b.searches.includes('best restaurants'));
+});
+
+Deno.test('away web: prompt names the specialties; local places get a boost and reason', async () => {
+  let prompt = '';
+  const { d, saved } = deps({
+    home: async () => ({ lat: 37.77, lng: -122.25 }),
+    getAreaProfile: async () => parseAreaProfile(BEIJING),
+    claudeWeb: async (p) => {
+      prompt = p;
+      return { text: '```json\n[{"name":"Lardo","city":"Beijing","cuisine":"roast duck","source":"Time Out Beijing","source_url":"https://x"}]\n```', searches: 2 };
+    },
+  });
+  await discoverWeb({ type: 'discover', mode: 'web', lat: 39.9, lng: 116.4, area_name: 'Beijing' }, d);
+  ok(prompt.includes('Peking roast duck') && prompt.includes('standout'));
+  eq(saved[0].scores[0].reason, 'Local specialty; from Time Out Beijing');
+});
+
+Deno.test('matches and parseAreaProfile', () => {
+  const p = parseAreaProfile(BEIJING)!;
+  ok(matches('uyghur/central_asian', p.local[1]));
+  ok(!matches('japanese', p.local[0]));
+  eq(parseAreaProfile('no json'), null);
+  eq(parseAreaProfile('{"local":[]}'), null);
 });

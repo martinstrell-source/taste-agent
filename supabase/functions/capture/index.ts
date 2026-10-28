@@ -10,7 +10,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
 import { capture, type Input, readBill, SYSTEM } from './core.ts';
-import { type Box, type DiscoverDeps, type DiscoverInput, discoverGoogle, discoverWeb } from './discover.ts';
+import { type AreaProfile, type Box, type DiscoverDeps, type DiscoverInput, discoverGoogle, discoverWeb } from './discover.ts';
 
 const URL_ = Deno.env.get('SUPABASE_URL')!;
 const firstKey = (json: string | undefined) => {
@@ -163,6 +163,19 @@ Deno.serve(async (req) => {
         },
         googleSearch: googleInBox,
         claudeWeb,
+        home: async () => {
+          const { data } = await admin.rpc('home_point', { uid });
+          const r = Array.isArray(data) ? data[0] : data;
+          return r && typeof r.lat === 'number' && typeof r.lng === 'number' ? { lat: r.lat, lng: r.lng } : null;
+        },
+        getAreaProfile: async (ck) => {
+          const { data } = await admin.from('area_profiles').select('profile').eq('city_key', ck).maybeSingle();
+          return (data?.profile as AreaProfile | undefined) ?? null;
+        },
+        saveAreaProfile: async (ck, name, p) => {
+          await admin.from('area_profiles').upsert({ city_key: ck, area_name: name, profile: p }, { onConflict: 'city_key' });
+        },
+        claudeText: (prompt) => claude([{ type: 'text', text: prompt }], true),
         existingForArea: async (_key, prefix) => {
           const { data } = await admin.from('candidates').select('google_place_id, cuisine, source').like('item_id', `${prefix}%`).not('google_place_id', 'is', null);
           return (data ?? []) as { google_place_id: string; cuisine: string | null; source: string }[];
