@@ -538,11 +538,6 @@ export default function Nearby() {
               ))}
             </View>
           </View>
-          {sort === 'match' && !merged.some((p) => p.score != null) && (
-            <Text style={styles.hint}>
-              No taste scores here yet, so Best match only puts picks first. Scores come from match.py (run weekly).
-            </Text>
-          )}
           <View style={styles.filterRow}>
             {KINDS.map((k) => (
               <Pressable key={k.key} onPress={() => setKind(k.key)} style={[styles.toggle, kind === k.key && styles.filterOn]}>
