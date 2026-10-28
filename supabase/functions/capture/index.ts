@@ -177,8 +177,8 @@ Deno.serve(async (req) => {
         },
         claudeText: (prompt) => claude([{ type: 'text', text: prompt }], true),
         existingForArea: async (_key, prefix) => {
-          const { data } = await admin.from('candidates').select('google_place_id, cuisine, source').like('item_id', `${prefix}%`).not('google_place_id', 'is', null);
-          return (data ?? []) as { google_place_id: string; cuisine: string | null; source: string }[];
+          const { data } = await admin.from('candidates').select('google_place_id, name, cuisine, source').like('item_id', `${prefix}%`).not('google_place_id', 'is', null);
+          return (data ?? []) as { google_place_id: string; name: string | null; cuisine: string | null; source: string }[];
         },
         save: async (items, rows, scores, key, mode) => {
           // one row per key: a search can return two branches with the same name (the table's key is item_id + name)

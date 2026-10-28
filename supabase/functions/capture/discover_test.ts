@@ -1,7 +1,7 @@
 // deno test supabase/functions/capture/discover_test.ts
 import { deepStrictEqual as eq, ok } from 'node:assert';
 
-import { areaKey, boxAround, type DiscoverDeps, discoverGoogle, discoverWeb, matches, parseAreaProfile, parseWeb } from './discover.ts';
+import { areaKey, boxAround, type DiscoverDeps, discoverGoogle, discoverWeb, isChain, matches, parseAreaProfile, parseWeb } from './discover.ts';
 
 const P = (id: string, name: string, types: string[], rating = 4.6, count = 120, status = 'OPERATIONAL') => ({
   id, displayName: { text: name }, formattedAddress: `1 Main St, Portland, OR 97201, USA`, location: { latitude: 45.52, longitude: -122.68 },
@@ -9,7 +9,7 @@ const P = (id: string, name: string, types: string[], rating = 4.6, count = 120,
 });
 
 function deps(over: Partial<DiscoverDeps> = {}) {
-  const saved: { items: unknown[]; rows: { google_place_id: string; in_bay_area: boolean; item_id: string }[]; scores: { google_place_id: string; score: number; reason: string }[]; mode: string }[] = [];
+  const saved: { items: unknown[]; rows: { google_place_id: string; in_bay_area: boolean; item_id: string; what_it_says?: string }[]; scores: { google_place_id: string; score: number; reason: string }[]; mode: string }[] = [];
   const searches: string[] = [];
   const d: DiscoverDeps = {
     topCuisines: async () => ['uyghur/central_asian', 'american', 'japanese', 'korean'],
@@ -139,4 +139,31 @@ Deno.test('matches and parseAreaProfile', () => {
   ok(!matches('japanese', p.local[0]));
   eq(parseAreaProfile('no json'), null);
   eq(parseAreaProfile('{"local":[]}'), null);
+});
+
+Deno.test('chains: listed chains and repeated names skipped; away, few reviews only from local specialties', async () => {
+  ok(isChain('Pizza Hut (Wangfujing)') && isChain('McDonald’s') && !isChain('Pizzeria Mozza'));
+  const { d, saved } = deps({
+    home: async () => ({ lat: 37.77, lng: -122.25 }),
+    getAreaProfile: async () => parseAreaProfile(BEIJING),
+    topCuisines: async () => ['pizza', 'korean'],
+    googleSearch: async (q) => {
+      if (q.startsWith('peking')) return [P('D1', 'Quanjude', ['chinese_restaurant'], 4.2, 8), P('D2', 'Quanjude', ['chinese_restaurant'], 4.2, 6)];
+      if (q.startsWith('xinjiang')) return [P('X1', 'Few Reviews Kebab', ['restaurant'], 4.9, 3)];
+      if (q.startsWith('pizza')) return [P('PH', 'Pizza Hut', ['pizza_restaurant'], 4.9, 900), P('GP', 'Gung Ho Pizza', ['pizza_restaurant'], 4.7, 300), P('GP2', 'Gung Ho Pizza', ['pizza_restaurant'], 4.7, 200)];
+      return [];
+    },
+  });
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 39.9, lng: 116.4, area_name: 'Beijing' }, d);
+  const ids = saved[0].scores.map((s) => s.google_place_id).sort();
+  eq(ids, ['D1', 'D2', 'X1']); // local duck house kept (repeat ok, few reviews ok); Pizza Hut and the repeated pizza place dropped
+  eq(saved[0].rows.find((r) => r.google_place_id === 'D1')?.what_it_says, 'Only 8 reviews on Google.');
+});
+
+Deno.test('chains: near home, a name twice in one search is skipped', async () => {
+  const { d, saved } = deps({
+    googleSearch: async (q) => (q.startsWith('korean') ? [P('K1', 'bb.q Chicken', ['restaurant']), P('K2', 'bb.q Chicken', ['restaurant']), P('K3', 'Han Il Kwan', ['korean_restaurant'])] : []),
+  });
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, d);
+  eq(saved[0].scores.map((s) => s.google_place_id), ['K3']);
 });

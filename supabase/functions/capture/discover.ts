@@ -49,7 +49,7 @@ export type DiscoverDeps = {
   googleSearch: (query: string, box: Box, rating: boolean) => Promise<Place[]>;
   claudeWeb: (prompt: string) => Promise<{ text: string; searches: number }>;
   save: (items: { item_id: string; source: string; title: string; link: string | null }[], rows: CandidateRow[], scores: Score[], areaKey: string, mode: string) => Promise<void>;
-  existingForArea: (areaKey: string, prefix: string) => Promise<{ google_place_id: string; cuisine: string | null; source: string }[]>;
+  existingForArea: (areaKey: string, prefix: string) => Promise<{ google_place_id: string; name?: string | null; cuisine: string | null; source: string }[]>;
   home: () => Promise<{ lat: number; lng: number } | null>; // center of most of the user's saves
   getAreaProfile: (cityKey: string) => Promise<AreaProfile | null>;
   saveAreaProfile: (cityKey: string, areaName: string, p: AreaProfile) => Promise<void>;
@@ -62,6 +62,11 @@ export const CACHE_DAYS = 30;
 export const WEB_PER_DAY = 3;
 export const AWAY_KM = 100;
 const TOO_BROAD = new Set(['american', 'asian', 'european', 'fusion', 'cafe', 'restaurant', 'breakfast', 'brunch']);
+// global chains: never a discovery, home or away
+const CHAINS = /^(pizza hut|kfc|mcdonald'?s|starbucks|domino'?s|subway|burger king|papa john'?s|dunkin'?|taco bell|wendy'?s|tim hortons|costa coffee|dairy queen|hard rock cafe|five guys|shake shack|popeyes|chick-fil-a|little caesars|panda express|chipotle|sizzler|tgi friday'?s|outback steakhouse|haagen-dazs|baskin-robbins|krispy kreme|7-eleven|family ?mart|lawson|luckin coffee|mixue|yoshinoya|sukiya|matsuya|coco ichibanya|saizeriya)\b/i;
+export function isChain(name: string): boolean {
+  return CHAINS.test(name.trim().replace(/[’`]/g, "'"));
+}
 const FOOD = /restaurant|food|cafe|coffee|bakery|bar|pub|brewery|winery|meal_|ice_cream|dessert|tea|juice|deli|confectionery|donut|bagel/;
 
 // about 5 km cells: everyone near the same spot shares one cache entry
@@ -206,7 +211,7 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps) {
   const away = await awayProfile(input, deps);
   const here = input.area_name ?? 'here';
   // kind sets how much a result counts (base) and the bar it has to clear (strict = standouts only)
-  type Q = { c: string; q: string; label: string; cuisine: string | null; base: number; strict: boolean; reason: string };
+  type Q = { c: string; q: string; label: string; cuisine: string | null; base: number; strict: boolean; local?: boolean; reason: string };
   let queries: Q[];
   if (!away) {
     const cuisines = all.slice(0, 5);
@@ -219,10 +224,10 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps) {
     const yoursLocal = all.slice(0, 8).filter((c) => specials.some((sp) => matches(c, sp))).slice(0, 3);
     const other = all.slice(0, 5).find((c) => !yoursLocal.includes(c));
     queries = [
-      ...away.local.slice(0, 5).map((sp, i) => ({ c: `local-${slug(sp.name)}`, q: sp.query, label: `${sp.name} in ${here}`, cuisine: sp.name.toLowerCase(), base: 1 - i / 12, strict: false, reason: `Local specialty: ${sp.name}` })),
+      ...away.local.slice(0, 5).map((sp, i) => ({ c: `local-${slug(sp.name)}`, q: sp.query, label: `${sp.name} in ${here}`, cuisine: sp.name.toLowerCase(), base: 1 - i / 12, strict: false, local: true, reason: `Local specialty: ${sp.name}` })),
       ...yoursLocal.map((c) => ({ c, q: `${nice(c)} restaurant`, label: `${nice(c)} near ${here}`, cuisine: c, base: 1, strict: false, reason: `${cap(nice(c))}, one of yours and a local strength` })),
       ...away.strengths.slice(0, 2).map((sp) => ({ c: `strength-${slug(sp.name)}`, q: sp.query, label: `${sp.name} in ${here}`, cuisine: sp.name.toLowerCase(), base: 0.8, strict: false, reason: `${sp.name}: something ${here} does especially well` })),
-      ...(other ? [{ c: other, q: `${nice(other)} restaurant`, label: `${nice(other)} near ${here}`, cuisine: other, base: 0.5, strict: true, reason: `${cap(nice(other))}, one of your top cuisines, and a standout here` }] : []),
+      ...(other ? [{ c: `${other}:standout`, q: `${nice(other)} restaurant`, label: `${nice(other)} near ${here}`, cuisine: other, base: 0.5, strict: true, reason: `${cap(nice(other))}, one of your top cuisines, and a standout here` }] : []),
     ];
   }
   const known = await deps.knownIds();
@@ -241,25 +246,32 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps) {
       if (cached.has(itemId)) {
         // searched recently for this area: reuse what's in the pool
         const prev = await deps.existingForArea(key, itemId);
-        places = prev.map((p) => ({ id: p.google_place_id, _cached: true }));
+        places = prev.filter((p) => !isChain(p.name ?? '')).map((p) => ({ id: p.google_place_id, _cached: true }));
       } else {
         places = await deps.googleSearch(q, box, true).catch(() => []);
         searched += 1;
         items.push({ item_id: itemId, source: 'Google Maps search', title: Q.label, link: null });
       }
+      // a name that shows up twice in one search is a chain (fine for a local specialty: a famous duck house)
+      const nameOf = (g: Place) => ((g.displayName as { text?: string } | undefined)?.text ?? '').trim().toLowerCase();
+      const seen = new Map<string, number>();
+      for (const g of places) if (!g._cached) seen.set(nameOf(g), (seen.get(nameOf(g)) ?? 0) + 1);
       places.forEach((g, rank) => {
         const id = g.id as string;
         if (!id || known.has(id)) return;
         if (!g._cached) {
+          if (isChain(nameOf(g)) || (!Q.local && (seen.get(nameOf(g)) ?? 0) > 1)) return;
           const types = (g.types as string[] | undefined) ?? [];
           const count = (g.userRatingCount as number | undefined) ?? 0;
           if ((g.businessStatus ?? 'OPERATIONAL') !== 'OPERATIONAL' || !types.some((t) => FOOD.test(t))) return;
           const rating = (g.rating as number | undefined) ?? 0;
           if (count >= 20 && rating < 4.3) return;
           if (Q.strict && (count < 150 || rating < 4.6)) return; // away from home, a non-local cuisine has to be a standout
+          // away from home, few reviews often means few people use Google there, not a new place
+          if (away && count < 20 && !Q.local) return;
           const row = toRow(g, itemId, 'Google Maps search', Q.label, null, {
             cuisine: Q.cuisine,
-            what_it_says: count < 20 ? `New: ${count} reviews on Google.` : `${(g.rating as number).toFixed(1)} stars from ${count} reviews on Google.`,
+            what_it_says: count < 20 ? (away ? `Only ${count} reviews on Google.` : `New: ${count} reviews on Google.`) : `${(g.rating as number).toFixed(1)} stars from ${count} reviews on Google.`,
           });
           if (row) rows.push(row);
         }
@@ -344,7 +356,7 @@ export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps) {
     // the web was searched for this area recently (by anyone): reuse, and score for this user
     const prev = await deps.existingForArea(key, `here:${key}:w:`);
     const scores = prev
-      .filter((p) => !known.has(p.google_place_id))
+      .filter((p) => !known.has(p.google_place_id) && !isChain(p.name ?? ''))
       .map((p) => ({ google_place_id: p.google_place_id, score: 0.55, reason: `From ${p.source}` }));
     await deps.save([], [], scores, key, 'web-cached');
     return { mode: 'web', area: key, cached: true, places: scores.length };
@@ -363,7 +375,7 @@ export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps) {
       if (!/^https?:\/\//.test(f.source_url)) return;
       const res = await deps.googleSearch(`${f.name} ${f.city}`, box, false).catch(() => []);
       const g = res.find((r) => similar(f.name, ((r.displayName as { text?: string } | undefined)?.text ?? '')));
-      if (!g || (g.businessStatus ?? 'OPERATIONAL') !== 'OPERATIONAL') return;
+      if (!g || (g.businessStatus ?? 'OPERATIONAL') !== 'OPERATIONAL' || isChain(((g.displayName as { text?: string } | undefined)?.text ?? ''))) return;
       const itemId = `here:${key}:w:${f.source_url}`.slice(0, 500);
       if (!items.some((x) => x.item_id === itemId)) items.push({ item_id: itemId, source: f.source, title: f.source_title || f.source, link: f.source_url });
       const row = toRow(g, itemId, f.source, f.source_title || f.source, f.source_url, {
