@@ -133,6 +133,7 @@ def main():
                e.kind, e.sentiment, e.reason, p.list_name
         FROM places p LEFT JOIN note_extractions e ON e.user_id = p.user_id AND e.place_key = p.place_key
         WHERE p.user_id = %s AND p.is_food AND p.removed_at IS NULL
+          AND coalesce(p.hidden_reason, '') <> 'didnt_like'   -- "Closed" places still count
         ORDER BY CASE p.list_name WHEN 'favorites' THEN 0 WHEN 'want_to_go' THEN 1 ELSE 2 END, p.id
     """, (uid,)).fetchall()
     # places the user reacted to (usually earlier picks): use the feed candidate's data

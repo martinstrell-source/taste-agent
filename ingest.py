@@ -14,6 +14,7 @@ A place on more than one list keeps the strongest: favorites > want_to_go > othe
 Re-running on a newer export brings the database in line with it, for the lists in the export:
 - new places are added
 - a place moved between lists follows it (e.g. taken off Favorites but still on Want to go)
+  (unless the user moved it between lists in the app: then the app's choice stays)
 - an edited, added or deleted note replaces the stored one; extract.py rereads it
 - a place no longer on any list in the export is marked removed (removed_at), not deleted.
   Removed places leave the taste profile and Nearby but are never suggested as picks.
@@ -110,8 +111,8 @@ def main():
     ensure_schema(con)
     uid = get_user(con, args.user)["uid"]
 
-    stored = {r[0]: {"id": r[1], "list": r[2], "note": r[3] or "", "removed": r[4] is not None}
-              for r in con.execute("SELECT place_key, id, list_name, note, removed_at FROM places "
+    stored = {r[0]: {"id": r[1], "list": r[2], "note": r[3] or "", "removed": r[4] is not None, "locked": r[5]}
+              for r in con.execute("SELECT place_key, id, list_name, note, removed_at, list_set_in_app FROM places "
                                    "WHERE user_id=%s AND added_via='takeout'", (uid,))}
     others = {r[0] for r in con.execute("SELECT place_key FROM places WHERE user_id=%s "
                                         "AND coalesce(added_via,'') <> 'takeout'", (uid,))}
@@ -140,7 +141,7 @@ def main():
         if s["removed"]:
             con.execute("UPDATE places SET removed_at=NULL WHERE id=%s", (s["id"],))
             restored.append((e["title"], best))
-        if best != s["list"]:
+        if best != s["list"] and not s["locked"]:  # a list set in the app wins over the export
             con.execute("UPDATE places SET list_name=%s WHERE id=%s", (best, s["id"]))
             moved.append((e["title"], s["list"], best))
         if note != s["note"]:

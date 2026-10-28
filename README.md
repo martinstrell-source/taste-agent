@@ -23,7 +23,8 @@ One-time setup on a new machine:
 .venv/bin/pip install "psycopg[binary]" anthropic feedparser certifi
 # .env needs: SUPABASE_DB_URL (Supabase > Connect > Session pooler, with the database password),
 # SUPABASE_URL, SUPABASE_SECRET_KEY, ANTHROPIC_API_KEY, GOOGLE_MAPS_API_KEY
-# Supabase SQL Editor: run schema.sql, then schema_v2.sql, then schema_v3.sql
+# Supabase SQL Editor: run schema.sql, then schema_v2.sql, schema_v3.sql and schema_v4.sql
+# Edge Function place-details (rating, price, hours for the app): see supabase/functions/place-details/
 ```
 
 ```bash
@@ -34,6 +35,7 @@ One-time setup on a new machine:
 .venv/bin/python enrich.py --user sam              # Google: location, categories, food or not
 .venv/bin/python profile.py --user sam             # -> user_profiles table
 .venv/bin/python fetch_sources.py                  # shared: new places from Bay Area food feeds
+.venv/bin/python discover.py                       # shared: new places by cuisine (Google) and web search (Claude)
 .venv/bin/python match.py --user sam --explain 10  # -> data/picks/sam.json
 .venv/bin/python digest.py --user sam              # -> data/digests/sam-<date>.html (preview) + digest_items
 .venv/bin/python feedback.py sam "Place name" love|meh|no|want
@@ -43,7 +45,7 @@ One-time setup on a new machine:
 `--user` takes the short handle (`martin`); a new user also needs `--email`, which becomes their
 Supabase sign-in account.
 
-Files: app/ (the iPhone app, Expo; see app/README.md), common.py (connection, helpers), schema.sql + schema_v2.sql + schema_v3.sql (Supabase tables, run once each),
+Files: app/ (the iPhone app, Expo; see app/README.md), common.py (connection, helpers), schema.sql + schema_v2.sql to schema_v4.sql (Supabase tables, run once each), discover.py (weekly shared discovery), discover_test.py (one-user, read-only test of the discovery sources), supabase/functions/place-details (Edge Function),
 s2decode.py (approximate location from Takeout ids), migrate_to_supabase.py (one-time copy of the
 SQLite data; do not rerun once the scripts write to Supabase, or it will overwrite newer rows with old
 ones). migrate_v3.py, rank.py and *_v1.py are superseded and kept for reference.

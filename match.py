@@ -50,7 +50,8 @@ BASE_CUISINE = {
 }
 BASE_FORMAT = {"restaurant": 0.60, "bar": 0.12, "coffee": 0.10, "cafe": 0.06, "bakery": 0.05,
                "dessert": 0.05, "market": 0.04, "tea": 0.02}
-MENTION = {"opening": 1.0, "review": 1.0, "list_entry": 0.8, "news": 0.6}
+MENTION = {"opening": 1.0, "review": 1.0, "list_entry": 0.8, "news": 0.6,
+           "discovery": 0.75}  # discovery = found by discover.py's Google search for a cuisine, no article
 # feed name -> the name people use for it in their notes
 SOURCE_ALIAS = {"Eater SF": "Eater", "SF Standard": "SF Standard", "SFist": "SFist",
                 "Tablehopper": "Tablehopper"}
@@ -256,6 +257,10 @@ def rank_places(con, user, prof):
                 return "saved"
         return None
 
+    # Google rating for places found by search alone (no article to vouch for them)
+    ratings = {g: (r, n) for g, r, n in con.execute(
+        "SELECT google_place_id, rating, user_rating_count FROM place_ratings")}
+
     by_place = defaultdict(list)
     for r in rows:
         by_place[r[0]].append(r)
@@ -287,6 +292,12 @@ def rank_places(con, user, prof):
                 "distance": 1 / (1 + haversine_m(lat, lng, *home) / 1000 / 15) if home else 0.5,
             }
             score = sum(WEIGHTS[k] * v for k, v in parts.items()) * TONE.get(tone, 0.9)
+            if mtype == "discovery":
+                rating, n_rev = ratings.get(gid, (None, None))
+                if rating and (n_rev or 0) >= 20:  # 4.2 stars -> x0.85, 5.0 -> x1.0
+                    score *= 0.85 + 0.15 * max(0.0, min(1.0, (rating - 4.2) / 0.8))
+                else:
+                    score *= 0.9  # too new to judge
             # stated dislikes: a place that is mainly something the user avoids drops a lot
             types_set = set((cats or "").split(","))
             if cuisines & dis_cuisines and not (cuisines & liked_cuisines):

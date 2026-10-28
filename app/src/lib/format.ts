@@ -66,3 +66,59 @@ export const GROUP_LABEL: Record<Group, string> = {
   other: 'Other lists',
   pick: 'New picks',
 };
+
+// ---------- Google details: price, rating ----------
+
+const PRICE: Record<string, string> = {
+  PRICE_LEVEL_FREE: 'Free',
+  PRICE_LEVEL_INEXPENSIVE: '$',
+  PRICE_LEVEL_MODERATE: '$$',
+  PRICE_LEVEL_EXPENSIVE: '$$$',
+  PRICE_LEVEL_VERY_EXPENSIVE: '$$$$',
+};
+export const PRICE_STEPS = ['$', '$$', '$$$', '$$$$'] as const;
+
+export function priceText(level?: string | null): string | null {
+  return level ? (PRICE[level] ?? null) : null;
+}
+
+// "4.6 ★ (812)" or "New: 12 reviews" (ratings mean little with few reviews)
+export function ratingText(rating?: number | null, count?: number | null): string | null {
+  if (!rating) return null;
+  if ((count ?? 0) < 20) return `New: ${count ?? 0} reviews`;
+  return `${rating.toFixed(1)} ★ (${(count ?? 0).toLocaleString()})`;
+}
+
+// ---------- food vs. drinks and sweets ----------
+
+const DRINK_SWEET = new Set([
+  'bar', 'wine_bar', 'cocktail_bar', 'pub', 'brewery', 'brewpub', 'beer_garden', 'lounge_bar', 'night_club',
+  'cafe', 'coffee_shop', 'coffee_roastery', 'tea_house', 'juice_shop', 'bakery', 'dessert_shop', 'dessert_restaurant',
+  'ice_cream_shop', 'confectionery', 'donut_shop', 'chocolate_shop', 'candy_store', 'cake_shop', 'bagel_shop',
+]);
+export type Kind = 'all' | 'food' | 'drink';
+
+// "drink" = drinks and sweets: bars, cafes, bakeries, dessert. A cafe that is also a restaurant counts as food.
+export function kindOf(p: NearbyPlace): 'food' | 'drink' {
+  const cats = p.categories ?? [];
+  const isRestaurant = cats.some(
+    (c) => (c === 'restaurant' || c.endsWith('_restaurant')) && !DRINK_SWEET.has(c),
+  );
+  if (isRestaurant) return 'food';
+  return cats.some((c) => DRINK_SWEET.has(c)) ? 'drink' : 'food';
+}
+
+// ---------- where a place came from ----------
+
+function shortDate(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+export function sourceLine(p: NearbyPlace): string | null {
+  if (p.kind === 'pick') return p.added_at ? `First seen ${shortDate(p.added_at)}` : null;
+  if (p.added_via === 'takeout') {
+    const list = p.list_name === 'favorites' ? 'Favorites' : p.list_name === 'want_to_go' ? 'Want to go' : (p.list_name ?? '').replace(/_/g, ' ');
+    return `From your Google ${list} list`;
+  }
+  return p.added_at ? `Saved ${shortDate(p.added_at)}` : null;
+}

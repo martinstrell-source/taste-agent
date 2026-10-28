@@ -40,7 +40,38 @@ export type NearbyPlace = {
   categories: string[] | null;
   list_name: string | null;
   note: string | null; // the user's note for saves; what the article said for picks
+  // added by schema_v4.sql (missing before it is run)
+  google_place_id?: string | null;
+  rating?: number | null;
+  review_count?: number | null;
+  price_level?: string | null;
+  opening_hours?: OpeningHours | null;
+  added_at?: string | null; // saved (or, for picks, first seen)
+  added_via?: string | null; // takeout | onboard | capture | pick
 };
+
+export type OpeningHours = {
+  periods?: { open: { day: number; hour: number; minute: number }; close?: { day: number; hour: number; minute: number } }[];
+  weekdayDescriptions?: string[];
+  utcOffsetMinutes?: number | null;
+};
+
+export type PlaceDetails = Pick<NearbyPlace, 'rating' | 'review_count' | 'price_level' | 'opening_hours'>;
+
+// Rating, price and opening hours from the place-details function (Google, cached on the server).
+// Returns {} if the function isn't set up yet, so the app still works without it.
+export async function fetchPlaceDetails(ids: string[], hours: boolean): Promise<Record<string, PlaceDetails>> {
+  const out: Record<string, PlaceDetails> = {};
+  const unique = [...new Set(ids.filter(Boolean))];
+  for (let i = 0; i < unique.length; i += 40) {
+    const { data, error } = await supabase.functions.invoke('place-details', {
+      body: { ids: unique.slice(i, i + 40), hours },
+    });
+    if (error || !data?.places) break;
+    Object.assign(out, data.places);
+  }
+  return out;
+}
 
 export async function fetchNearby(lat: number, lng: number, radiusM: number): Promise<NearbyPlace[]> {
   const { data, error } = await supabase.rpc('nearby', {
