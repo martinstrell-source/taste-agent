@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Taste Agent import worker on the Mac mini: every 5 minutes, runs what the app queued (Google Maps
+     imports, profile and picks after onboarding). Installed by worker/install.sh. launchd never runs
+     two at once; a run with nothing queued takes a second. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.tasteagent.imports</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__ROOT__/.venv/bin/python</string>
+    <string>__ROOT__/import_worker.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>__ROOT__</string>
+  <key>StartInterval</key><integer>300</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>__ROOT__/data/logs/imports-launchd.log</string>
+  <key>StandardErrorPath</key><string>__ROOT__/data/logs/imports-launchd.log</string>
+</dict>
+</plist>

@@ -1,0 +1,278 @@
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import { saveCapture, type Candidate } from '@/lib/capture';
+import { getJob, latestTakeout, pickScreenshots, readScreenshot, startTakeoutImport, type ImportJob } from '@/lib/onboard';
+import { colors } from '@/lib/theme';
+
+type Props = {
+  visible: boolean;
+  near: { lat: number; lng: number } | null;
+  onClose: () => void;
+  onSaved: () => void;
+};
+
+type Row = { name: string; note: string; candidates: Candidate[]; pick: number | null; status?: string };
+type Tab = 'maps' | 'shots';
+
+export default function ImportPlaces({ visible, near, onClose, onSaved }: Props) {
+  const insets = useSafeAreaInsets();
+  const [tab, setTab] = useState<Tab>('maps');
+  const [error, setError] = useState<string | null>(null);
+
+  // Google Maps (Takeout)
+  const [job, setJob] = useState<ImportJob | null>(null);
+  const [uploading, setUploading] = useState(false);
+
+  // screenshots
+  const [progress, setProgress] = useState<string | null>(null);
+  const [rows, setRows] = useState<Row[]>([]);
+  const [app, setApp] = useState<string | null>(null);
+  const [list, setList] = useState<'want_to_go' | 'favorites'>('want_to_go');
+  const [saving, setSaving] = useState(false);
+  const [savedCount, setSavedCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (visible) latestTakeout().then(setJob).catch(() => {});
+  }, [visible]);
+
+  // while an import is queued or running, check on it every 10 seconds
+  useEffect(() => {
+    if (!visible || !job || (job.status !== 'queued' && job.status !== 'running')) return;
+    const t = setInterval(() => {
+      getJob(job.id)
+        .then((j) => {
+          if (!j) return;
+          setJob(j);
+          if (j.status === 'done') onSaved();
+        })
+        .catch(() => {});
+    }, 10000);
+    return () => clearInterval(t);
+  }, [visible, job, onSaved]);
+
+  async function upload() {
+    setError(null);
+    setUploading(true);
+    try {
+      const j = await startTakeoutImport();
+      if (j) setJob(j);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function screenshots() {
+    setError(null);
+    setSavedCount(null);
+    try {
+      const shots = await pickScreenshots();
+      if (!shots.length) return;
+      const seen = new Set(rows.map((r) => (r.pick != null ? r.candidates[r.pick].google_place_id : r.name)));
+      const added: Row[] = [];
+      for (let i = 0; i < shots.length; i++) {
+        setProgress(`Reading screenshot ${i + 1} of ${shots.length}…`);
+        const r = await readScreenshot(shots[i].base64, near);
+        if (r.app) setApp(r.app);
+        for (const p of r.places) {
+          const key = p.candidates[0]?.google_place_id ?? p.name;
+          if (seen.has(key)) continue; // the same place on two overlapping screenshots
+          seen.add(key);
+          added.push({ name: p.name, note: p.note, candidates: p.candidates, pick: p.candidates.length ? 0 : null });
+        }
+        setRows((old) => [...old, ...added.splice(0)]);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setProgress(null);
+    }
+  }
+
+  async function saveAll() {
+    setSaving(true);
+    setError(null);
+    let n = 0;
+    const next = [...rows];
+    for (let i = 0; i < next.length; i++) {
+      const r = next[i];
+      if (r.pick == null || r.status) continue;
+      try {
+        const c = r.candidates[r.pick];
+        const res = await saveCapture(
+          { type: 'photo', text: app ? `(screenshot from ${app})` : '(screenshot)' },
+          { name: r.name, location_hint: '', note: r.note ? `${app ?? 'Imported'}: ${r.note}` : '', dishes: [], candidates: [] },
+          c,
+          { type: 'app', name: app, url: null },
+          list,
+          'screenshot',
+        );
+        next[i] = { ...r, status: res.saved ? 'Saved' : `Already on ${res.alreadyOn}` };
+        if (res.saved) n += 1;
+      } catch (e) {
+        next[i] = { ...r, status: `Not saved: ${(e as Error).message}` };
+      }
+      setRows([...next]);
+    }
+    setSaving(false);
+    setSavedCount(n);
+    if (n) onSaved();
+  }
+
+  function close() {
+    setRows([]);
+    setApp(null);
+    setSavedCount(null);
+    setError(null);
+    onClose();
+  }
+
+  const toSave = rows.filter((r) => r.pick != null && !r.status).length;
+  const running = job && (job.status === 'queued' || job.status === 'running');
+
+  return (
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
+      <View style={[styles.wrap, { paddingBottom: insets.bottom + 12 }]}>
+        <View style={styles.head}>
+          <Text style={styles.title}>Import places</Text>
+          <Pressable onPress={close} hitSlop={10}>
+            <Text style={styles.done}>Done</Text>
+          </Pressable>
+        </View>
+        <View style={styles.tabs}>
+          {(['maps', 'shots'] as Tab[]).map((t) => (
+            <Pressable key={t} style={[styles.tab, tab === t && styles.tabOn]} onPress={() => setTab(t)}>
+              <Text style={[styles.tabText, tab === t && styles.tabTextOn]}>{t === 'maps' ? 'Google Maps' : 'Screenshots'}</Text>
+            </Pressable>
+          ))}
+        </View>
+        {error && <Text style={styles.error}>{error}</Text>}
+
+        {tab === 'maps' && (
+          <ScrollView contentContainerStyle={styles.body}>
+            <Text style={styles.p}>Brings in your saved Google Maps lists (Want to go, Favorites and your own lists), with your notes.</Text>
+            <Text style={styles.step}>1. Open Google Takeout and sign in.</Text>
+            <Pressable onPress={() => Linking.openURL('https://takeout.google.com')} hitSlop={6}>
+              <Text style={styles.link}>takeout.google.com</Text>
+            </Pressable>
+            <Text style={styles.step}>2. Tap "Deselect all", then check only "Saved".</Text>
+            <Text style={styles.step}>3. Next step: export once, as a .zip. Create export.</Text>
+            <Text style={styles.step}>4. Google emails you when it's ready (minutes to an hour). Download the .zip on this phone.</Text>
+            <Text style={styles.step}>5. Come back here and choose the file.</Text>
+            <Pressable style={[styles.primary, (uploading || !!running) && styles.off]} onPress={upload} disabled={uploading || !!running}>
+              {uploading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Choose the Takeout file</Text>}
+            </Pressable>
+            {job && (
+              <View style={styles.job}>
+                <Text style={styles.jobHead}>
+                  {job.status === 'queued' ? 'Waiting to start…' : job.status === 'running' ? 'Importing… (a few minutes for big lists)' : job.status === 'done' ? 'Import done' : 'Import had a problem'}
+                </Text>
+                {!!job.message && <Text style={styles.p}>{job.message}</Text>}
+                {running && <Text style={styles.muted}>You can close this; the import keeps going.</Text>}
+              </View>
+            )}
+          </ScrollView>
+        )}
+
+        {tab === 'shots' && (
+          <ScrollView contentContainerStyle={styles.body}>
+            <Text style={styles.p}>For lists in apps without an export, like Beli, Yelp collections or a notes list: take screenshots of the list, then choose them here (up to 10 at a time).</Text>
+            <Pressable style={[styles.primary, !!progress && styles.off]} onPress={screenshots} disabled={!!progress}>
+              {progress ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{rows.length ? 'Add more screenshots' : 'Choose screenshots'}</Text>}
+            </Pressable>
+            {!!progress && <Text style={styles.muted}>{progress}</Text>}
+            {rows.length > 0 && (
+              <>
+                <Text style={styles.p}>
+                  {rows.length} places{app ? ` from ${app}` : ''}. Tap the right match, or Skip.
+                </Text>
+                <View style={styles.seg}>
+                  {(['want_to_go', 'favorites'] as const).map((l) => (
+                    <Pressable key={l} style={[styles.segBtn, list === l && styles.segOn]} onPress={() => setList(l)}>
+                      <Text style={[styles.segText, list === l && styles.segTextOn]}>{l === 'want_to_go' ? 'Save to Want to go' : 'Save to Favorites'}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+                {rows.map((r, i) => (
+                  <View key={`${r.name}-${i}`} style={styles.place}>
+                    <Text style={styles.placeName}>
+                      {r.name}
+                      {r.note ? <Text style={styles.muted}>  {r.note}</Text> : null}
+                    </Text>
+                    {r.status ? (
+                      <Text style={styles.muted}>{r.status}</Text>
+                    ) : (
+                      <>
+                        {r.candidates.length === 0 && <Text style={styles.muted}>Not found on Google.</Text>}
+                        {r.candidates.slice(0, 2).map((c, j) => (
+                          <Pressable key={c.google_place_id} onPress={() => setRows((x) => x.map((y, k) => (k === i ? { ...y, pick: j } : y)))} style={[styles.cand, r.pick === j && styles.candOn]}>
+                            <Text style={styles.candName}>{c.name}</Text>
+                            {!!c.address && <Text style={styles.muted} numberOfLines={1}>{c.address}</Text>}
+                          </Pressable>
+                        ))}
+                        {r.candidates.length > 0 && (
+                          <Pressable onPress={() => setRows((x) => x.map((y, k) => (k === i ? { ...y, pick: null } : y)))} hitSlop={6}>
+                            <Text style={[styles.skip, r.pick == null && { color: colors.text, fontWeight: '700' }]}>Skip</Text>
+                          </Pressable>
+                        )}
+                      </>
+                    )}
+                  </View>
+                ))}
+              </>
+            )}
+          </ScrollView>
+        )}
+
+        {tab === 'shots' && (toSave > 0 || savedCount != null) && (
+          <View style={styles.footer}>
+            {savedCount != null && <Text style={styles.muted}>Saved {savedCount}.</Text>}
+            {toSave > 0 && (
+              <Pressable style={[styles.primary, saving && styles.off]} onPress={saveAll} disabled={saving}>
+                {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Save {toSave} places</Text>}
+              </Pressable>
+            )}
+          </View>
+        )}
+      </View>
+    </Modal>
+  );
+}
+
+const styles = StyleSheet.create({
+  wrap: { flex: 1, backgroundColor: colors.bg, paddingTop: 16 },
+  head: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16 },
+  title: { fontSize: 22, fontWeight: '800', color: colors.text },
+  done: { fontSize: 17, fontWeight: '700', color: colors.accent },
+  tabs: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingVertical: 12 },
+  tab: { flex: 1, borderWidth: 1, borderColor: colors.line, borderRadius: 18, paddingVertical: 8, alignItems: 'center', backgroundColor: '#fff' },
+  tabOn: { backgroundColor: colors.text, borderColor: colors.text },
+  tabText: { fontSize: 15, fontWeight: '600', color: colors.text },
+  tabTextOn: { color: '#fff' },
+  body: { paddingHorizontal: 16, gap: 10, paddingBottom: 24 },
+  p: { fontSize: 15, lineHeight: 21, color: colors.text },
+  step: { fontSize: 15, lineHeight: 21, color: colors.text },
+  link: { fontSize: 15, fontWeight: '700', color: colors.accent },
+  muted: { fontSize: 14, color: colors.muted, fontWeight: '400' },
+  error: { color: colors.danger, fontSize: 15, paddingHorizontal: 16 },
+  primary: { backgroundColor: colors.accent, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
+  primaryText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+  off: { opacity: 0.5 },
+  job: { gap: 4, padding: 12, borderRadius: 10, backgroundColor: '#fff', borderWidth: 1, borderColor: colors.line },
+  jobHead: { fontSize: 15, fontWeight: '700', color: colors.text },
+  seg: { flexDirection: 'row', gap: 8 },
+  segBtn: { flex: 1, borderWidth: 1, borderColor: colors.line, borderRadius: 10, paddingVertical: 8, alignItems: 'center', backgroundColor: '#fff' },
+  segOn: { borderColor: colors.accent, borderWidth: 2 },
+  segText: { fontSize: 14, fontWeight: '600', color: colors.text },
+  segTextOn: { color: colors.accent },
+  place: { gap: 6, paddingVertical: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+  placeName: { fontSize: 16, fontWeight: '700', color: colors.text },
+  cand: { borderWidth: 1, borderColor: colors.line, borderRadius: 10, padding: 10, backgroundColor: '#fff' },
+  candOn: { borderColor: colors.accent, borderWidth: 2 },
+  candName: { fontSize: 15, fontWeight: '600', color: colors.text },
+  skip: { fontSize: 14, color: colors.muted, paddingVertical: 2 },
+  footer: { paddingHorizontal: 16, paddingTop: 8, gap: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
+});

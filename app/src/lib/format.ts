@@ -57,7 +57,8 @@ export function metersBetween(a: { lat: number; lng: number }, b: { lat: number;
 export function mapsUrl(p: NearbyPlace): string {
   // Google Maps app if installed, otherwise the web page; picks carry a Google place id
   const query = encodeURIComponent([p.name, p.address].filter(Boolean).join(', '));
-  const placeId = p.kind === 'pick' ? `&query_place_id=${encodeURIComponent(p.ref)}` : '';
+  const gid = p.kind === 'pick' ? p.ref : p.google_place_id;
+  const placeId = gid ? `&query_place_id=${encodeURIComponent(gid)}` : '';
   return `https://www.google.com/maps/search/?api=1&query=${query}${placeId}`;
 }
 

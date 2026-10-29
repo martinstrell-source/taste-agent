@@ -10,6 +10,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
 import { capture, type Input, readBill, SYSTEM } from './core.ts';
+import { makeHandle, placeRow, prefRows, screenshotList, type ShotInput, starterProfile, type TasteInput, tasteRead, type TasteSaveInput } from './onboard.ts';
 import { type AreaProfile, areaKey, type Box, type DiscoverDeps, type DiscoverInput, discoverGoogle, discoverWeb, type Trace } from './discover.ts';
 
 const URL_ = Deno.env.get('SUPABASE_URL')!;
@@ -129,8 +130,9 @@ Deno.serve(async (req) => {
   } catch {
     return Response.json({ error: 'Send JSON' }, { status: 400, headers: cors });
   }
-  if (!['link', 'text', 'photo', 'friend', 'bill', 'discover'].includes(input?.type)) {
-    return Response.json({ error: 'type must be link, text, photo, friend, bill or discover' }, { status: 400, headers: cors });
+  const TYPES = ['link', 'text', 'photo', 'friend', 'bill', 'discover', 'me', 'taste_read', 'taste_save', 'screenshot_list'];
+  if (!TYPES.includes(input?.type)) {
+    return Response.json({ error: `type must be one of ${TYPES.join(', ')}` }, { status: 400, headers: cors });
   }
   if ((input.image_base64?.length ?? 0) > 7_000_000) {
     return Response.json({ error: 'Photo too large' }, { status: 413, headers: cors });
@@ -140,7 +142,66 @@ Deno.serve(async (req) => {
   const admin = createClient(URL_, SECRET, { auth: { persistSession: false } });
   const { data: sh } = await admin.from('user_shorthand').select('term, name, type').eq('user_id', who.user.id);
 
+  // the user's app_users row: made on first use (sign-in creates only the auth account)
+  const uid0 = who.user.id;
+  async function ensureUser(): Promise<string> {
+    const { data: u } = await admin.from('app_users').select('handle').eq('user_id', uid0).maybeSingle();
+    if (u?.handle) return u.handle as string;
+    const handle = await makeHandle(who.user!.email ?? 'user', async (h) => {
+      const { data } = await admin.from('app_users').select('user_id').eq('handle', h).maybeSingle();
+      return !!data;
+    });
+    const { error } = await admin.from('app_users').upsert({ user_id: uid0, handle, email: who.user!.email ?? null }, { onConflict: 'user_id' });
+    if (error) throw new Error(`creating your account: ${error.message}`);
+    return handle;
+  }
+
   try {
+    const t = (input as { type: string }).type;
+    if (t === 'me') {
+      // called at launch: makes sure the account row exists and says whether onboarding is done
+      const handle = await ensureUser();
+      const [{ count: places }, { data: prof }, { data: job }] = await Promise.all([
+        admin.from('places').select('id', { count: 'exact', head: true }).eq('user_id', uid0),
+        admin.from('user_profiles').select('profile').eq('user_id', uid0).maybeSingle(),
+        admin.from('import_jobs').select('id, kind, status, message, counts, created_at, finished_at').eq('user_id', uid0).order('id', { ascending: false }).limit(1).maybeSingle(),
+      ]);
+      return Response.json({ handle, places: places ?? 0, has_profile: !!prof, last_job: job ?? null }, { headers: cors });
+    }
+    if (t === 'taste_read') {
+      return Response.json(await tasteRead(input as unknown as TasteInput, { claude, googleSearch }), { headers: cors });
+    }
+    if (t === 'screenshot_list') {
+      return Response.json(await screenshotList(input as unknown as ShotInput, { claude, googleSearch }), { headers: cors });
+    }
+    if (t === 'taste_save') {
+      const s = input as unknown as TasteSaveInput;
+      // one row per Google place: the same place picked twice would make the upsert fail
+      const seenIds = new Set<string>();
+      const places = (Array.isArray(s.places) ? s.places : [])
+        .filter((p) => p?.candidate?.google_place_id && !seenIds.has(p.candidate.google_place_id) && !!seenIds.add(p.candidate.google_place_id))
+        .slice(0, 20);
+      const handle = await ensureUser();
+      if (places.length) {
+        const { error } = await admin.from('places').upsert(places.map((p) => placeRow(uid0, p)), { onConflict: 'user_id,place_key' });
+        if (error) throw new Error(`saving your places: ${error.message}`);
+      }
+      const prefs = prefRows(uid0, s);
+      if (prefs.length) {
+        const { error } = await admin.from('user_prefs').upsert(prefs, { onConflict: 'user_id,kind,value', ignoreDuplicates: true });
+        if (error) throw new Error(`saving your likes: ${error.message}`);
+      }
+      // a starter profile so Discover works now; never replaces a real one from profile.py
+      const { data: prof } = await admin.from('user_profiles').select('profile').eq('user_id', uid0).maybeSingle();
+      const existing = (typeof prof?.profile === 'string' ? JSON.parse(prof.profile) : prof?.profile) as { starter?: boolean } | null;
+      if (!existing || existing.starter) {
+        const { error } = await admin.from('user_profiles').upsert({ user_id: uid0, profile: starterProfile(handle, { ...s, places }), updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+        if (error) throw new Error(`saving your profile: ${error.message}`);
+      }
+      // the Mac mini builds the full profile and this week's picks
+      await admin.from('import_jobs').insert({ user_id: uid0, kind: 'refresh' });
+      return Response.json({ saved: places.length, handle }, { headers: cors });
+    }
     if ((input as unknown as DiscoverInput).type === 'discover') {
       const d = input as unknown as DiscoverInput;
       if (typeof d.lat !== 'number' || typeof d.lng !== 'number') {

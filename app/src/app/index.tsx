@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import * as Location from 'expo-location';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -12,11 +13,13 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import MapView, { Marker, type Region } from 'react-native-maps';
+import MapView, { Marker, PROVIDER_GOOGLE, type Region } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import AddPlace from '@/components/AddPlace';
 import HiddenList from '@/components/HiddenList';
+import ImportPlaces from '@/components/ImportPlaces';
+import Onboarding from '@/components/Onboarding';
 import LogVisit from '@/components/LogVisit';
 import PlaceCard from '@/components/PlaceCard';
 import {
@@ -36,6 +39,7 @@ import {
 } from '@/lib/format';
 import { hidePlace, moveToList, undoHide, type HideReason } from '@/lib/hide';
 import { areaName, isTimeout, runDiscover, waitForWebRun } from '@/lib/discover';
+import { me } from '@/lib/onboard';
 import { notInterested, saveFromPick, undoPick } from '@/lib/picks';
 import { suggestPlaces, type Suggestion } from '@/lib/places-search';
 import { isOpenNow } from '@/lib/hours';
@@ -49,6 +53,10 @@ const KINDS: { key: Kind; label: string }[] = [
   { key: 'food', label: 'Food' },
   { key: 'drink', label: 'Drinks & sweets' },
 ];
+// Google's map in real builds that have the key (app.config.js); Expo Go always uses Apple Maps
+const GOOGLE_MAP =
+  !!Constants.expoConfig?.extra?.googleMaps && Constants.executionEnvironment !== ExecutionEnvironment.StoreClient;
+
 // used only if location is off: central San Francisco, so the map still works
 const FALLBACK = { lat: 37.7749, lng: -122.4194 };
 
@@ -113,6 +121,18 @@ export default function Nearby() {
   const [discovering, setDiscovering] = useState<string | null>(null); // status line while Discover runs
   const [visitFor, setVisitFor] = useState<NearbyPlace | null>(null);
   const [visitsKey, setVisitsKey] = useState(0);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [runDiscoverSoon, setRunDiscoverSoon] = useState(false);
+
+  // first launch for a new account: onboarding (no places and no taste profile yet)
+  useEffect(() => {
+    me()
+      .then((m) => {
+        if (m.places === 0 && !m.has_profile) setShowOnboarding(true);
+      })
+      .catch(() => {}); // function not updated yet: carry on without onboarding
+  }, []);
 
   // where am I?
   const locate = useCallback(async () => {
@@ -387,6 +407,14 @@ export default function Nearby() {
     }
   }
 
+  // after onboarding: find places around them once the map has a center
+  useEffect(() => {
+    if (!runDiscoverSoon || !center) return;
+    setRunDiscoverSoon(false);
+    discover();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runDiscoverSoon, center]);
+
   // offer "search this area" once the map has moved away from the last search
   const moved = !!(center && mapCenter && metersBetween(center, mapCenter) > radius * 0.3);
 
@@ -452,6 +480,7 @@ export default function Nearby() {
           <MapView
             ref={mapRef}
             style={StyleSheet.absoluteFill}
+            provider={GOOGLE_MAP ? PROVIDER_GOOGLE : undefined}
             initialRegion={{
               latitude: center.lat,
               longitude: center.lng,
@@ -614,6 +643,9 @@ export default function Nearby() {
           }
           ListFooterComponent={
             <View style={styles.footer}>
+              <Pressable onPress={() => setShowImport(true)} hitSlop={8}>
+                <Text style={styles.footerText}>Import places</Text>
+              </Pressable>
               <Pressable onPress={() => setShowHidden(true)} hitSlop={8}>
                 <Text style={styles.footerText}>Hidden places</Text>
               </Pressable>
@@ -663,6 +695,21 @@ export default function Nearby() {
         near={mapCenter ?? center}
         onClose={() => setShowAdd(false)}
         onSaved={() => setReload((n) => n + 1)}
+      />
+      <ImportPlaces
+        visible={showImport}
+        near={mapCenter ?? center}
+        onClose={() => setShowImport(false)}
+        onSaved={() => setReload((n) => n + 1)}
+      />
+      <Onboarding
+        visible={showOnboarding}
+        onDone={({ importNext }) => {
+          setShowOnboarding(false);
+          setReload((n) => n + 1);
+          setRunDiscoverSoon(true);
+          if (importNext) setTimeout(() => setShowImport(true), 600); // after the onboarding sheet has closed
+        }}
       />
       <HiddenList visible={showHidden} onClose={() => setShowHidden(false)} onChanged={() => setReload((n) => n + 1)} />
     </SafeAreaView>
@@ -832,7 +879,7 @@ const styles = StyleSheet.create({
   why: { fontSize: 14, color: colors.pick, fontWeight: '600' },
   sep: { height: StyleSheet.hairlineWidth, backgroundColor: colors.line, marginLeft: 38 },
   empty: { textAlign: 'center', color: colors.muted, marginTop: 24, paddingHorizontal: 24 },
-  footer: { flexDirection: 'row', justifyContent: 'center', gap: 32, marginTop: 24, padding: 8 },
+  footer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', columnGap: 22, rowGap: 12, marginTop: 24, padding: 8 },
   footerText: { color: colors.muted, fontSize: 14 },
   undo: {
     position: 'absolute',

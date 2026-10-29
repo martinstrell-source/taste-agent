@@ -46,12 +46,14 @@ export async function runCapture(input: CaptureInput): Promise<CaptureResult> {
   return data as CaptureResult;
 }
 
-// Save the chosen match to Want to go, with where it came from. Returns the list it's on if already saved.
+// Save the chosen match to Want to go (or Favorites), with where it came from. Returns the list it's on if already saved.
 export async function saveCapture(
   input: CaptureInput,
   found: Found,
   c: Candidate,
   source: Source,
+  list: 'want_to_go' | 'favorites' = 'want_to_go',
+  inputType?: string, // recorded in captures; defaults to the input's type
 ): Promise<{ saved: boolean; alreadyOn?: string }> {
   const { data: u } = await supabase.auth.getUser();
   if (!u.user) throw new Error('Not signed in');
@@ -73,7 +75,7 @@ export async function saveCapture(
       {
         user_id: u.user.id,
         place_key: `capture:${c.google_place_id}`,
-        list_name: 'want_to_go',
+        list_name: list,
         added_via: 'capture',
         list_set_in_app: true,
         title: found.name,
@@ -98,7 +100,7 @@ export async function saveCapture(
   if (error) throw new Error(error.message);
   await supabase.from('captures').insert({
     user_id: u.user.id,
-    input_type: input.type,
+    input_type: inputType ?? input.type,
     raw_input: input.type === 'link' ? input.url : input.type === 'photo' ? input.text || '(photo)' : input.text,
     source_type: source.type,
     source_name: source.name,

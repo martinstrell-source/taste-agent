@@ -175,7 +175,7 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
             <Pressable
               style={({ pressed }) => [styles.button, { flex: 2 }, pressed && { opacity: 0.7 }]}
               onPress={() => Linking.openURL(mapsUrl(place))}>
-              <Text style={styles.buttonText}>Open in Maps</Text>
+              <Text style={styles.buttonText}>Google Maps</Text>
             </Pressable>
             <Pressable
               style={({ pressed }) => [styles.button, styles.wazeBtn, pressed && { opacity: 0.7 }]}
