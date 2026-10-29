@@ -51,6 +51,8 @@ export type NearbyPlace = {
   // added by schema_v6.sql: the pick's taste score for this user, and why
   score?: number | null;
   why?: string | null;
+  // set in the app for a restaurant chosen from the search bar (not saved, not a pick)
+  from_search?: boolean;
 };
 
 export type OpeningHours = {

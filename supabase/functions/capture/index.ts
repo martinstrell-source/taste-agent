@@ -10,6 +10,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
 import { capture, type Input, readBill, SYSTEM } from './core.ts';
+import { type GetInput, placeGet, placeSearch, type SearchInput } from './search.ts';
 import { makeHandle, placeRow, prefRows, screenshotList, type ShotInput, starterProfile, type TasteInput, tasteRead, type TasteSaveInput } from './onboard.ts';
 import { type AreaProfile, areaKey, type Box, type DiscoverDeps, type DiscoverInput, discoverGoogle, discoverWeb, type Trace } from './discover.ts';
 
@@ -99,6 +100,26 @@ async function claudeWeb(prompt: string) {
   return { text, searches, queries, pages };
 }
 
+// Search bar: Google Places Autocomplete, and the chosen place's details (same session token)
+async function autocomplete(body: Record<string, unknown>) {
+  const r = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_KEY! },
+    body: JSON.stringify(body),
+  });
+  return r.ok ? await r.json() : {};
+}
+async function placeDetails(id: string, session?: string) {
+  const qs = session ? `?sessionToken=${encodeURIComponent(session)}` : '';
+  const r = await fetch(`https://places.googleapis.com/v1/places/${encodeURIComponent(id)}${qs}`, {
+    headers: {
+      'X-Goog-Api-Key': GOOGLE_KEY!,
+      'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,types,businessStatus,rating,userRatingCount,priceLevel',
+    },
+  });
+  return r.ok ? await r.json() : null;
+}
+
 async function googleSearch(query: string, bias?: { lat: number; lng: number }) {
   const body: Record<string, unknown> = { textQuery: query, pageSize: 5 };
   if (bias) body.locationBias = { circle: { center: { latitude: bias.lat, longitude: bias.lng }, radius: 30000 } };
@@ -130,7 +151,7 @@ Deno.serve(async (req) => {
   } catch {
     return Response.json({ error: 'Send JSON' }, { status: 400, headers: cors });
   }
-  const TYPES = ['link', 'text', 'photo', 'friend', 'bill', 'discover', 'me', 'taste_read', 'taste_save', 'screenshot_list'];
+  const TYPES = ['link', 'text', 'photo', 'friend', 'bill', 'discover', 'me', 'taste_read', 'taste_save', 'screenshot_list', 'place_search', 'place_get'];
   if (!TYPES.includes(input?.type)) {
     return Response.json({ error: `type must be one of ${TYPES.join(', ')}` }, { status: 400, headers: cors });
   }
@@ -167,6 +188,12 @@ Deno.serve(async (req) => {
         admin.from('import_jobs').select('id, kind, status, message, counts, created_at, finished_at').eq('user_id', uid0).order('id', { ascending: false }).limit(1).maybeSingle(),
       ]);
       return Response.json({ handle, places: places ?? 0, has_profile: !!prof, last_job: job ?? null }, { headers: cors });
+    }
+    if (t === 'place_search') {
+      return Response.json(await placeSearch(input as unknown as SearchInput, { autocomplete, details: placeDetails }), { headers: cors });
+    }
+    if (t === 'place_get') {
+      return Response.json(await placeGet(input as unknown as GetInput, { autocomplete, details: placeDetails }), { headers: cors });
     }
     if (t === 'taste_read') {
       return Response.json(await tasteRead(input as unknown as TasteInput, { claude, googleSearch }), { headers: cors });

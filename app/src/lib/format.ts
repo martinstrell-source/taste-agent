@@ -15,6 +15,7 @@ const LIST_LABELS: Record<string, string> = {
 };
 
 export function placeLabel(p: NearbyPlace): string {
+  if (p.from_search) return 'Search result';
   if (p.kind === 'pick') return 'New pick';
   if (!p.list_name) return 'Saved';
   return LIST_LABELS[p.list_name] ?? p.list_name.replace(/_/g, ' ');

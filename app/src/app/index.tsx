@@ -8,6 +8,7 @@ import {
   Keyboard,
   Linking,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -43,6 +44,7 @@ import { me } from '@/lib/onboard';
 import { fetchStarred, isStarred, NO_STARS, setStar, type Starred } from '@/lib/star';
 import { notInterested, saveFromPick, undoPick } from '@/lib/picks';
 import { suggestPlaces, type Suggestion } from '@/lib/places-search';
+import { googlePlace, newSession, searchGoogle, searchSaves, type GoogleHit } from '@/lib/search';
 import { isOpenNow } from '@/lib/hours';
 import { fetchNearby, fetchPlaceDetails, supabase, type NearbyPlace, type PlaceDetails } from '@/lib/supabase';
 import { colors, groupColor } from '@/lib/theme';
@@ -83,6 +85,14 @@ export default function Nearby() {
   const [placeName, setPlaceName] = useState<string | null>(null); // shown while away from current location
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [focused, setFocused] = useState(false);
+  const [savedHits, setSavedHits] = useState<NearbyPlace[]>([]); // your places whose name matches
+  const [googleHits, setGoogleHits] = useState<GoogleHit[]>([]); // restaurants from Google
+  const session = useRef(newSession());
+  // open this place's card once the list around it has loaded (after = the load count when it was chosen)
+  const [pendingSelect, setPendingSelectState] = useState<{ key: string; after: number } | null>(null);
+  const [loads, setLoads] = useState(0); // finished list loads
+  const loadsRef = useRef(0);
+  const setPendingSelect = (key: string) => setPendingSelectState({ key, after: loadsRef.current });
 
   // filters
   const [showFilters, setShowFilters] = useState(false);
@@ -192,7 +202,12 @@ export default function Nearby() {
     setLoading(true);
     setError(null);
     fetchNearby(center.lat, center.lng, radius)
-      .then((rows) => !cancelled && setPlaces(rows))
+      .then((rows) => {
+        if (cancelled) return;
+        setPlaces(rows);
+        loadsRef.current += 1;
+        setLoads(loadsRef.current);
+      })
       .catch((e) => !cancelled && setError(e.message))
       .finally(() => !cancelled && setLoading(false));
     mapRef.current?.animateToRegion(
@@ -209,30 +224,96 @@ export default function Nearby() {
     };
   }, [center, radius, reload]);
 
-  // suggestions while typing (2+ letters), nearest first, after a short pause
+  // suggestions while typing (2+ letters), after a short pause: your places, restaurants from Google
+  // (3+ letters), and cities and neighborhoods
   useEffect(() => {
     const q = query.trim();
     if (!focused || q.length < 2) {
       setSuggestions([]);
+      setSavedHits([]);
+      setGoogleHits([]);
       return;
     }
+    const near = mapCenter ?? center;
     const ctl = new AbortController();
+    let live = true;
     const t = setTimeout(() => {
-      suggestPlaces(q, center ?? undefined, ctl.signal)
-        .then(setSuggestions)
-        .catch(() => setSuggestions([]));
+      suggestPlaces(q, near ?? undefined, ctl.signal)
+        .then((s) => live && setSuggestions(s))
+        .catch(() => live && setSuggestions([]));
+      searchSaves(q, near).then((s) => live && setSavedHits(s));
     }, 250);
+    const tg = setTimeout(() => {
+      if (q.length >= 3) searchGoogle(q, near, session.current).then((g) => live && setGoogleHits(g));
+      else setGoogleHits([]);
+    }, 400);
     return () => {
+      live = false;
       clearTimeout(t);
+      clearTimeout(tg);
       ctl.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, focused]);
 
-  function choose(sg: Suggestion) {
+  function clearSearch() {
     Keyboard.dismiss();
-    setQuery(sg.label);
     setSuggestions([]);
+    setSavedHits([]);
+    setGoogleHits([]);
+    session.current = newSession(); // the next search is a new Google session
+  }
+
+  // one of your places: go there and open its card when the list has loaded
+  function chooseSaved(p: NearbyPlace) {
+    setQuery(p.name);
+    clearSearch();
+    setPlaceName(null);
+    setRadius(1000);
+    setPendingSelect(p.ref);
+    setCenter({ lat: p.place_lat, lng: p.place_lng });
+  }
+
+  // a restaurant from Google: go there and open its card (save it from there)
+  async function chooseGoogle(h: GoogleHit) {
+    const token = session.current;
+    setQuery(h.name);
+    clearSearch();
+    setSearching(true);
+    try {
+      const p = await googlePlace(h.google_place_id, token, mapCenter ?? center);
+      if (!p) {
+        setError(`Couldn't load ${h.name}.`);
+        return;
+      }
+      setPlaceName(null);
+      setRadius(1000);
+      setCenter({ lat: p.place_lat, lng: p.place_lng });
+      // if it's already one of yours or a pick, the card for that shows up instead (once loaded)
+      setPendingSelect(`gid:${p.google_place_id}`);
+      setSearchResult(p);
+    } finally {
+      setSearching(false);
+    }
+  }
+  const [searchResult, setSearchResult] = useState<NearbyPlace | null>(null);
+
+  // open the card for a place chosen in the search bar once the list around it has loaded
+  useEffect(() => {
+    if (!pendingSelect || loads <= pendingSelect.after) return;
+    const key = pendingSelect.key;
+    const gid = key.startsWith('gid:') ? key.slice(4) : null;
+    const found = places.find((p) => (gid ? p.google_place_id === gid || (p.kind === 'pick' && p.ref === gid) : p.kind === 'saved' && p.ref === key));
+    setPendingSelectState(null);
+    if (found) setSelected(found);
+    else if (gid && searchResult) setSelected(searchResult);
+    setSearchResult(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loads, pendingSelect]);
+
+  function choose(sg: Suggestion) {
+    setQuery(sg.label);
+    clearSearch();
     setPlaceName(sg.label);
     setRadius((r) => Math.max(r, 3000));
     setCenter({ lat: sg.lat, lng: sg.lng });
@@ -473,10 +554,12 @@ export default function Nearby() {
           style={styles.search}
           value={query}
           onChangeText={setQuery}
-          placeholder="Go to a city or neighborhood"
+          placeholder="Search a restaurant, your places or a city"
           placeholderTextColor={colors.muted}
           returnKeyType="search"
-          onSubmitEditing={() => (suggestions[0] ? choose(suggestions[0]) : goTo())}
+          onSubmitEditing={() =>
+            savedHits[0] ? chooseSaved(savedHits[0]) : googleHits[0] ? chooseGoogle(googleHits[0]) : suggestions[0] ? choose(suggestions[0]) : goTo()
+          }
           onFocus={() => setFocused(true)}
           onBlur={() => setTimeout(() => setFocused(false), 250)} // let a tap on a suggestion land first
           autoCorrect={false}
@@ -486,8 +569,36 @@ export default function Nearby() {
       </View>
       {/* suggestions hang over whatever is below (map or list), so they work with the map hidden too */}
       <View style={styles.suggestAnchor}>
-      {suggestions.length > 0 && (
-        <View style={styles.suggestBox}>
+      {(suggestions.length > 0 || savedHits.length > 0 || googleHits.length > 0) && (
+        <ScrollView style={styles.suggestBox} keyboardShouldPersistTaps="handled">
+          {savedHits.length > 0 && <Text style={styles.suggestHead}>Your places</Text>}
+          {savedHits.map((p) => (
+            <Pressable
+              key={`s:${p.ref}`}
+              onPress={() => chooseSaved(p)}
+              style={({ pressed }) => [styles.suggestRow, pressed && { backgroundColor: colors.line }]}>
+              <Text style={styles.suggestName}>
+                <Text style={{ color: groupColor[groupOf(p)] }}>● </Text>
+                {p.name}
+              </Text>
+              <Text style={styles.suggestDetail}>{[placeLabel(p), p.distance_m ? formatDistance(p.distance_m) : ''].filter(Boolean).join(' · ')}</Text>
+            </Pressable>
+          ))}
+          {googleHits.filter((g) => !savedHits.some((s) => s.google_place_id === g.google_place_id)).length > 0 && (
+            <Text style={styles.suggestHead}>Restaurants</Text>
+          )}
+          {googleHits
+            .filter((g) => !savedHits.some((s) => s.google_place_id === g.google_place_id))
+            .map((g) => (
+              <Pressable
+                key={`g:${g.google_place_id}`}
+                onPress={() => chooseGoogle(g)}
+                style={({ pressed }) => [styles.suggestRow, pressed && { backgroundColor: colors.line }]}>
+                <Text style={styles.suggestName}>{g.name}</Text>
+                {!!g.detail && <Text style={styles.suggestDetail}>{g.detail}</Text>}
+              </Pressable>
+            ))}
+          {suggestions.length > 0 && (savedHits.length > 0 || googleHits.length > 0) && <Text style={styles.suggestHead}>Places</Text>}
           {suggestions.map((sg) => (
             <Pressable
               key={sg.key}
@@ -497,8 +608,8 @@ export default function Nearby() {
               {!!sg.detail && <Text style={styles.suggestDetail}>{sg.detail}</Text>}
             </Pressable>
           ))}
-          <Text style={styles.osm}>Suggestions © OpenStreetMap contributors</Text>
-        </View>
+          {suggestions.length > 0 && <Text style={styles.osm}>Places © OpenStreetMap contributors</Text>}
+        </ScrollView>
       )}
       </View>
 
@@ -821,6 +932,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.line,
     paddingVertical: 4,
+    maxHeight: 440,
     shadowColor: '#000',
     shadowOpacity: 0.15,
     shadowRadius: 8,
@@ -828,6 +940,7 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   suggestRow: { paddingHorizontal: 12, paddingVertical: 9 },
+  suggestHead: { fontSize: 12, fontWeight: '700', color: colors.muted, paddingHorizontal: 12, paddingTop: 8, textTransform: 'uppercase', letterSpacing: 0.5 },
   suggestName: { fontSize: 16, color: colors.text, fontWeight: '600' },
   suggestDetail: { fontSize: 13, color: colors.muted },
   osm: { fontSize: 11, color: colors.muted, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 6 },

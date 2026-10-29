@@ -1,5 +1,5 @@
 // ONE-FILE VERSION for pasting into the Supabase dashboard editor (Edge Functions > capture > Code).
-// Generated from index.ts + core.ts + discover.ts + onboard.ts by build-paste.py; edit those, not this.
+// Generated from index.ts + core.ts + discover.ts + onboard.ts + search.ts by build-paste.py; edit those, not this.
 
 // Supabase Edge Function "capture": the server side of "Add a place".
 // Reads a link, pasted text, a photo or a friend's tip with Claude, then suggests Google matches.
@@ -99,6 +99,26 @@ async function claudeWeb(prompt: string) {
   return { text, searches, queries, pages };
 }
 
+// Search bar: Google Places Autocomplete, and the chosen place's details (same session token)
+async function autocomplete(body: Record<string, unknown>) {
+  const r = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_KEY! },
+    body: JSON.stringify(body),
+  });
+  return r.ok ? await r.json() : {};
+}
+async function placeDetails(id: string, session?: string) {
+  const qs = session ? `?sessionToken=${encodeURIComponent(session)}` : '';
+  const r = await fetch(`https://places.googleapis.com/v1/places/${encodeURIComponent(id)}${qs}`, {
+    headers: {
+      'X-Goog-Api-Key': GOOGLE_KEY!,
+      'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,types,businessStatus,rating,userRatingCount,priceLevel',
+    },
+  });
+  return r.ok ? await r.json() : null;
+}
+
 async function googleSearch(query: string, bias?: { lat: number; lng: number }) {
   const body: Record<string, unknown> = { textQuery: query, pageSize: 5 };
   if (bias) body.locationBias = { circle: { center: { latitude: bias.lat, longitude: bias.lng }, radius: 30000 } };
@@ -130,7 +150,7 @@ Deno.serve(async (req) => {
   } catch {
     return Response.json({ error: 'Send JSON' }, { status: 400, headers: cors });
   }
-  const TYPES = ['link', 'text', 'photo', 'friend', 'bill', 'discover', 'me', 'taste_read', 'taste_save', 'screenshot_list'];
+  const TYPES = ['link', 'text', 'photo', 'friend', 'bill', 'discover', 'me', 'taste_read', 'taste_save', 'screenshot_list', 'place_search', 'place_get'];
   if (!TYPES.includes(input?.type)) {
     return Response.json({ error: `type must be one of ${TYPES.join(', ')}` }, { status: 400, headers: cors });
   }
@@ -167,6 +187,12 @@ Deno.serve(async (req) => {
         admin.from('import_jobs').select('id, kind, status, message, counts, created_at, finished_at').eq('user_id', uid0).order('id', { ascending: false }).limit(1).maybeSingle(),
       ]);
       return Response.json({ handle, places: places ?? 0, has_profile: !!prof, last_job: job ?? null }, { headers: cors });
+    }
+    if (t === 'place_search') {
+      return Response.json(await placeSearch(input as unknown as SearchInput, { autocomplete, details: placeDetails }), { headers: cors });
+    }
+    if (t === 'place_get') {
+      return Response.json(await placeGet(input as unknown as GetInput, { autocomplete, details: placeDetails }), { headers: cors });
     }
     if (t === 'taste_read') {
       return Response.json(await tasteRead(input as unknown as TasteInput, { claude, googleSearch }), { headers: cors });
@@ -1297,4 +1323,80 @@ export async function screenshotList(input: ShotInput, deps: OnboardDeps): Promi
   const bias = typeof input.lat === 'number' && typeof input.lng === 'number' ? { lat: input.lat, lng: input.lng } : undefined;
   const places = await Promise.all(parsed.places.map(async (p) => ({ ...p, candidates: await candidatesFor(p.name, p.location_hint, bias, deps) })));
   return { app: parsed.app, places, message: places.length ? undefined : input.image_base64 ? "Couldn't find a list of places in that screenshot." : "Couldn't find any places in that text." };
+}
+
+// ---------- search.ts ----------
+
+// Search bar: restaurants by name from Google, as you type.
+//   place_search  Google Places Autocomplete near the map: food and drink places only
+//   place_get     the chosen one's location, type and rating (closes the autocomplete session)
+// The app passes one session token per search so Google bills the typing and the final lookup as one.
+// Pure logic with injected calls so it can be tested; index.ts wires it up.
+
+export type SearchInput = { type: 'place_search'; q?: string; lat?: number; lng?: number; session?: string };
+export type GetInput = { type: 'place_get'; id?: string; session?: string };
+export type SearchHit = { google_place_id: string; name: string; detail: string };
+export type PlaceInfo = {
+  google_place_id: string; name: string; address: string | null; lat: number | null; lng: number | null;
+  categories: string[]; open: boolean; rating: number | null; review_count: number | null; price_level: string | null;
+};
+
+export type SearchDeps = {
+  autocomplete: (body: Record<string, unknown>) => Promise<Record<string, unknown>>;
+  details: (id: string, session?: string) => Promise<Record<string, unknown> | null>;
+};
+
+const FOODISH = new Set(['restaurant', 'food', 'cafe', 'bar', 'bakery', 'meal_takeaway', 'meal_delivery', 'coffee_shop', 'ice_cream_shop', 'night_club', 'liquor_store', 'food_store']);
+
+export function autocompleteBody(input: SearchInput) {
+  const body: Record<string, unknown> = { input: (input.q ?? '').trim().slice(0, 100), languageCode: 'en' };
+  if (input.session) body.sessionToken = input.session;
+  if (typeof input.lat === 'number' && typeof input.lng === 'number') {
+    body.locationBias = { circle: { center: { latitude: input.lat, longitude: input.lng }, radius: 50000 } };
+    body.origin = { latitude: input.lat, longitude: input.lng };
+  }
+  return body;
+}
+
+export function parseAutocomplete(d: Record<string, unknown>): SearchHit[] {
+  const out: SearchHit[] = [];
+  for (const s of (d.suggestions as Record<string, unknown>[] | undefined) ?? []) {
+    const p = s.placePrediction as Record<string, unknown> | undefined;
+    if (!p?.placeId) continue;
+    const types = (p.types as string[] | undefined) ?? [];
+    if (!types.some((t) => FOODISH.has(t) || t.endsWith('_restaurant'))) continue; // food and drink only
+    const f = p.structuredFormat as { mainText?: { text?: string }; secondaryText?: { text?: string } } | undefined;
+    out.push({
+      google_place_id: String(p.placeId),
+      name: f?.mainText?.text ?? (p.text as { text?: string } | undefined)?.text ?? '',
+      detail: f?.secondaryText?.text ?? '',
+    });
+  }
+  return out.slice(0, 5);
+}
+
+export async function placeSearch(input: SearchInput, deps: SearchDeps): Promise<{ hits: SearchHit[] }> {
+  if ((input.q ?? '').trim().length < 3) return { hits: [] };
+  return { hits: parseAutocomplete(await deps.autocomplete(autocompleteBody(input)).catch(() => ({}))) };
+}
+
+export async function placeGet(input: GetInput, deps: SearchDeps): Promise<{ place: PlaceInfo | null }> {
+  if (!input.id) return { place: null };
+  const g = await deps.details(input.id, input.session).catch(() => null);
+  if (!g?.id) return { place: null };
+  const loc = (g.location ?? {}) as { latitude?: number; longitude?: number };
+  return {
+    place: {
+      google_place_id: String(g.id),
+      name: ((g.displayName as { text?: string } | undefined)?.text ?? '').trim(),
+      address: (g.formattedAddress as string | undefined) ?? null,
+      lat: loc.latitude ?? null,
+      lng: loc.longitude ?? null,
+      categories: (g.types as string[] | undefined) ?? [],
+      open: ((g.businessStatus as string | undefined) ?? 'OPERATIONAL') === 'OPERATIONAL',
+      rating: (g.rating as number | undefined) ?? null,
+      review_count: (g.userRatingCount as number | undefined) ?? null,
+      price_level: (g.priceLevel as string | undefined) ?? null,
+    },
+  };
 }

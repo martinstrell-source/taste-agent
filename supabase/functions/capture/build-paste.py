@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Builds paste-into-dashboard.ts (one file for the Supabase dashboard editor) from index.ts + core.ts + discover.ts + onboard.ts.
+# Builds paste-into-dashboard.ts (one file for the Supabase dashboard editor) from index.ts + core.ts + discover.ts + onboard.ts + search.ts.
 # Run from anywhere: python3 supabase/functions/capture/build-paste.py
 import pathlib, re
 
@@ -14,11 +14,12 @@ def body(name, renames=()):
 
 out = (
     "// ONE-FILE VERSION for pasting into the Supabase dashboard editor (Edge Functions > capture > Code).\n"
-    "// Generated from index.ts + core.ts + discover.ts + onboard.ts by build-paste.py; edit those, not this.\n\n"
+    "// Generated from index.ts + core.ts + discover.ts + onboard.ts + search.ts by build-paste.py; edit those, not this.\n\n"
     + body("index.ts")
     + "\n// ---------- core.ts ----------\n\n" + body("core.ts")
     + "\n// ---------- discover.ts ----------\n\n" + body("discover.ts", [("FOOD", "FOOD_D"), ("Place", "DPlace")])
     + "\n// ---------- onboard.ts ----------\n\n" + body("onboard.ts")
+    + "\n// ---------- search.ts ----------\n\n" + body("search.ts")
 )
 (here / "paste-into-dashboard.ts").write_text(out)
 print(f"wrote paste-into-dashboard.ts ({len(out)} chars)")
