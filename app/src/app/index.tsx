@@ -40,6 +40,7 @@ import {
 import { hidePlace, moveToList, undoHide, type HideReason } from '@/lib/hide';
 import { areaName, isTimeout, runDiscover, waitForWebRun } from '@/lib/discover';
 import { me } from '@/lib/onboard';
+import { fetchStarred, isStarred, NO_STARS, setStar, type Starred } from '@/lib/star';
 import { notInterested, saveFromPick, undoPick } from '@/lib/picks';
 import { suggestPlaces, type Suggestion } from '@/lib/places-search';
 import { isOpenNow } from '@/lib/hours';
@@ -124,6 +125,32 @@ export default function Nearby() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [runDiscoverSoon, setRunDiscoverSoon] = useState(false);
+  const [starred, setStarred] = useState<Starred>(NO_STARS);
+
+  // which saves are starred: reloaded with the list
+  useEffect(() => {
+    fetchStarred().then(setStarred).catch(() => {});
+  }, [reload]);
+
+  async function star(p: NearbyPlace, on: boolean) {
+    // show it at once; put it back if saving fails
+    const prev = starred;
+    const next = { ids: new Set(prev.ids), gids: new Set(prev.gids) };
+    if (on) {
+      next.ids.add(p.ref);
+      if (p.google_place_id) next.gids.add(p.google_place_id);
+    } else {
+      next.ids.delete(p.ref);
+      if (p.google_place_id) next.gids.delete(p.google_place_id);
+    }
+    setStarred(next);
+    try {
+      await setStar(p, on);
+    } catch (e) {
+      setStarred(prev);
+      setError((e as Error).message);
+    }
+  }
 
   // first launch for a new account: onboarding (no places and no taste profile yet)
   useEffect(() => {
@@ -293,13 +320,14 @@ export default function Nearby() {
       return true;
     });
     if (sort === 'match') {
-      // strongest picks first (unscored new picks after them), then your saves: Favorites, Want to go, others
+      // starred places first, then the strongest picks (unscored new picks after them), then your saves:
+      // Favorites, Want to go, others
       const rank = (p: NearbyPlace) =>
-        p.kind === 'pick' ? (p.score == null ? 1 : 0) : p.list_name === 'favorites' ? 2 : p.list_name === 'want_to_go' ? 3 : 4;
+        isStarred(p, starred) ? -1 : p.kind === 'pick' ? (p.score == null ? 1 : 0) : p.list_name === 'favorites' ? 2 : p.list_name === 'want_to_go' ? 3 : 4;
       list.sort((a, b) => rank(a) - rank(b) || (b.score ?? 0) - (a.score ?? 0) || a.distance_m - b.distance_m);
     }
     return { shown: list, unknown: unknownCount };
-  }, [merged, hiddenGroups, kind, prices, openNow, sort]);
+  }, [merged, hiddenGroups, kind, prices, openNow, sort, starred]);
 
   const activeFilters = (kind !== 'all' ? 1 : 0) + (prices.size ? 1 : 0) + (openNow ? 1 : 0) + (sort === 'match' ? 1 : 0);
 
@@ -654,7 +682,7 @@ export default function Nearby() {
               </Pressable>
             </View>
           }
-          renderItem={({ item }) => <Row place={item} onPress={() => setSelected(item)} />}
+          renderItem={({ item }) => <Row place={item} starred={isStarred(item, starred)} onPress={() => setSelected(item)} />}
         />
       )}
 
@@ -681,6 +709,8 @@ export default function Nearby() {
         }}
         visitsKey={visitsKey}
         onDetails={(gid, d) => setDetails((old) => ({ ...old, [gid]: d }))}
+        starred={!!selected && isStarred(selected, starred)}
+        onStar={star}
       />
       <LogVisit
         place={visitFor}
@@ -716,15 +746,18 @@ export default function Nearby() {
   );
 }
 
-function Row({ place, onPress }: { place: NearbyPlace; onPress: () => void }) {
+function Row({ place, starred, onPress }: { place: NearbyPlace; starred: boolean; onPress: () => void }) {
   const cats = categoryText(place);
   const facts = [ratingText(place.rating, place.review_count), priceText(place.price_level)].filter(Boolean).join(' · ');
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.row, pressed && { backgroundColor: colors.line }]}>
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.row, starred && { backgroundColor: colors.starBg }, pressed && { backgroundColor: colors.line }]}>
       <View style={[styles.dot, { backgroundColor: groupColor[groupOf(place)] }]} />
       <View style={{ flex: 1, gap: 2 }}>
         <View style={styles.rowTop}>
           <Text style={styles.name} numberOfLines={1}>
+            {starred ? <Text style={{ color: colors.star }}>★ </Text> : null}
             {place.name}
           </Text>
           <Text style={styles.dist}>{formatDistance(place.distance_m)}</Text>

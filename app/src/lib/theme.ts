@@ -10,6 +10,8 @@ export const colors = {
   otherList: '#4F6D8F', // other saved lists and places added in the app
   pick: '#C9822B', // new picks
   danger: '#B3261E',
+  star: '#C7920A', // starred Want to go places
+  starBg: '#FFF3CC', // their row in the list
 };
 
 export const groupColor = {

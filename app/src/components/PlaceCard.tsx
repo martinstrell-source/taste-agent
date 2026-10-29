@@ -29,6 +29,8 @@ type Props = {
   onLogVisit: (p: NearbyPlace) => void;
   visitsKey: number; // changes after a visit is saved, to reload the list
   onDetails: (googleId: string, d: PlaceDetails) => void; // so the list and filters see it too
+  starred: boolean;
+  onStar: (p: NearbyPlace, on: boolean) => void;
 };
 
 function shortDate(iso: string): string {
@@ -37,7 +39,7 @@ function shortDate(iso: string): string {
 }
 
 // Bottom card with the basics for one place
-export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLogVisit, visitsKey, onDetails }: Props) {
+export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLogVisit, visitsKey, onDetails, starred, onStar }: Props) {
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(false);
   const [mentions, setMentions] = useState<Mention[]>([]);
@@ -100,7 +102,19 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
               <Text style={[styles.badge, { backgroundColor: groupColor[groupOf(place)] }]}>{placeLabel(place)}</Text>
               <Text style={styles.muted}>{formatDistance(place.distance_m)}</Text>
             </View>
-            <Text style={styles.name}>{place.name}</Text>
+            <View style={styles.nameRow}>
+              <Text style={[styles.name, { flex: 1 }]}>{place.name}</Text>
+              {/* star a Want to go place (a starred place that moved to Favorites can still be unstarred) */}
+              {place.kind === 'saved' && (place.list_name === 'want_to_go' || starred) && (
+                <Pressable
+                  onPress={() => onStar(place, !starred)}
+                  hitSlop={10}
+                  style={[styles.starBtn, starred && styles.starBtnOn]}
+                  accessibilityLabel={starred ? 'Remove star' : 'Star: show at the top of Best match'}>
+                  <Text style={[styles.starText, starred && { color: '#fff' }]}>{starred ? '★ Starred' : '☆ Star'}</Text>
+                </Pressable>
+              )}
+            </View>
 
             {(facts || open !== null || loading) && (
               <View style={styles.factsRow}>
@@ -236,6 +250,10 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   badge: { color: '#fff', fontSize: 13, fontWeight: '600', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, overflow: 'hidden' },
   name: { fontSize: 22, fontWeight: '700', color: colors.text },
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  starBtn: { borderWidth: 1.5, borderColor: colors.star, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6 },
+  starBtnOn: { backgroundColor: colors.star },
+  starText: { fontSize: 15, fontWeight: '700', color: colors.star },
   factsRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 12 },
   facts: { fontSize: 16, fontWeight: '600', color: colors.text },
   text: { fontSize: 16, color: colors.text, lineHeight: 22 },
