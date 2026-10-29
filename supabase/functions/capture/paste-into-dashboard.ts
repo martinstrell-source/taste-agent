@@ -566,7 +566,7 @@ export type Score = { google_place_id: string; score: number; reason: string };
 export type Trace = Record<string, unknown>;
 export type WebResult = { text: string; searches: number; queries?: string[]; pages?: { url: string; title: string }[] };
 export type Specialty = { name: string; query: string; tags: string[] };
-export type AreaProfile = { local: Specialty[]; strengths: Specialty[] };
+export type AreaProfile = { size?: string; local: Specialty[]; strengths: Specialty[] }; // size: major | mid | small
 
 export type DiscoverDeps = {
   topCuisines: () => Promise<string[]>; // this user's, strongest first
@@ -625,11 +625,14 @@ export function areaPrompt(area: string): string {
    regional food that is strong here (for Beijing: Peking roast duck, zhajiangmian, Hui Muslim food, Xinjiang food).
 2. List up to 3 non-local categories this place does better than almost anywhere (for Tokyo: pizza, specialty coffee).
    Leave it empty if nothing stands out. Do not list a category just because it is popular.
+3. Size: "major" for a big city with a deep food scene (Beijing, Tokyo, New York), "mid" for a regional city,
+   "small" for a town or small city.
 Return only JSON, no other text:
-{"local": [{"name": "Peking roast duck", "query": "peking roast duck restaurant", "tags": ["peking duck", "roast duck", "beijing", "chinese"]}],
+{"size": "major", "local": [{"name": "Peking roast duck", "query": "peking roast duck restaurant", "tags": ["peking duck", "roast duck", "beijing", "chinese"]}],
  "strengths": [{"name": "...", "query": "...", "tags": ["..."]}]}
 "query" is a short Google Maps search in English. "tags" are lowercase cuisine words a food app might use for these
-places (include the broad cuisine, like "chinese", and regional ones, like "uyghur" or "central asian").`;
+places (include the broad cuisine, like "chinese", and regional ones, like "uyghur" or "central asian").
+A tag must never name a different cuisine: Native American "Indian tacos" get "native american" and "frybread", not "indian".`;
 }
 
 export function parseAreaProfile(text: string): AreaProfile | null {
@@ -646,7 +649,8 @@ export function parseAreaProfile(text: string): AreaProfile | null {
           query: String(p.query).trim(),
           tags: (Array.isArray(p.tags) ? p.tags : []).filter((t: unknown) => typeof t === 'string').map((t: string) => t.toLowerCase().trim()).filter(Boolean),
         }));
-    const p = { local: list(d.local, 6), strengths: list(d.strengths, 3) };
+    const size = ['major', 'mid', 'small'].includes(d.size) ? d.size : undefined;
+    const p = { size, local: list(d.local, 6), strengths: list(d.strengths, 3) };
     return p.local.length ? p : null;
   } catch {
     return null;
@@ -654,10 +658,10 @@ export function parseAreaProfile(text: string): AreaProfile | null {
 }
 
 // does one of the user's cuisines ("uyghur/central_asian") match a specialty's tags?
+// whole labels only: "indian" must not match "indian tacos"
 export function matches(cuisine: string, sp: Specialty): boolean {
   const words = cuisine.toLowerCase().replace(/_/g, ' ').split('/').map((w) => w.trim()).filter(Boolean);
-  const hay = [sp.name.toLowerCase(), ...sp.tags];
-  return words.some((w) => hay.some((t) => t === w || t.includes(w) || (t.length > 3 && w.includes(t))));
+  return words.some((w) => sp.tags.includes(w));
 }
 
 // away from home? and if so, what the place is known for (asked once per city, shared)
@@ -672,7 +676,7 @@ export async function awayProfile(input: DiscoverInput, deps: DiscoverDeps, trac
   trace.away = true;
   const ck = cityKey(input.lat, input.lng);
   const have = await deps.getAreaProfile(ck);
-  if (have) {
+  if (have?.size) { // profiles saved before size was asked get asked again once
     trace.city_profile = { city_key: ck, from: 'saved', ...have };
     return have;
   }
@@ -768,7 +772,8 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
       ...away.local.slice(0, 5).map((sp, i) => ({ c: `local-${slug(sp.name)}`, q: sp.query, label: `${sp.name} in ${here}`, cuisine: sp.name.toLowerCase(), base: 1 - i / 12, strict: false, local: true, reason: `Local specialty: ${sp.name}` })),
       ...yoursLocal.map((c) => ({ c, q: `${nice(c)} restaurant`, label: `${nice(c)} near ${here}`, cuisine: c, base: 1, strict: false, reason: `${cap(nice(c))}, one of yours and a local strength` })),
       ...away.strengths.slice(0, 2).map((sp) => ({ c: `strength-${slug(sp.name)}`, q: sp.query, label: `${sp.name} in ${here}`, cuisine: sp.name.toLowerCase(), base: 0.8, strict: false, reason: `${sp.name}: something ${here} does especially well` })),
-      ...(other ? [{ c: `${other}:standout`, q: `${nice(other)} restaurant`, label: `${nice(other)} near ${here}`, cuisine: other, base: 0.5, strict: true, reason: `${cap(nice(other))}, one of your top cuisines, and a standout here` }] : []),
+      // a non-local standout only in a major food city; a 4.6 rating means little in a small market
+      ...(other && away.size === 'major' ? [{ c: `${other}:standout`, q: `${nice(other)} restaurant`, label: `${nice(other)} near ${here}`, cuisine: other, base: 0.5, strict: true, reason: `${cap(nice(other))}, one of your top cuisines, and a standout here` }] : []),
     ];
   }
   const known = await deps.knownIds();
@@ -806,6 +811,12 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
       const seen = new Map<string, number>();
       for (const g of places) if (!g._cached) seen.set(nameOf(g), (seen.get(nameOf(g)) ?? 0) + 1);
       ts.results = places.length;
+      // a local-specialty search keeps Google's top 8: further down the results drift off topic
+      if (Q.local && places.length > 8 && !places[0]?._cached) {
+        for (const g of places.slice(8)) dropped.push({ name: ((g.displayName as { text?: string } | undefined)?.text ?? '').trim(), reason: 'beyond the top 8 for a local-specialty search' });
+        places = places.slice(0, 8);
+      }
+      const firstOf = new Set<string>(); // one branch per name in a local-specialty search
       places.forEach((g, rank) => {
         const id = g.id as string;
         const label = ((g.displayName as { text?: string } | undefined)?.text ?? (g._name as string) ?? id ?? '').trim();
@@ -815,6 +826,8 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
         if (!g._cached) {
           if (isChain(nameOf(g))) return drop('chain');
           if (!Q.local && (seen.get(nameOf(g)) ?? 0) > 1) return drop('same name twice in this search (chain)');
+          if (Q.local && firstOf.has(nameOf(g))) return drop('another branch, kept the first');
+          firstOf.add(nameOf(g));
           const types = (g.types as string[] | undefined) ?? [];
           const count = (g.userRatingCount as number | undefined) ?? 0;
           if ((g.businessStatus ?? 'OPERATIONAL') !== 'OPERATIONAL') return drop(`not open (${g.businessStatus})`);

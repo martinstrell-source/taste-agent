@@ -78,7 +78,7 @@ Deno.test('parseWeb: tolerant of chatter, skips nameless entries', () => {
   eq(parseWeb('nothing'), []);
 });
 
-const BEIJING = '{"local":[{"name":"Peking roast duck","query":"peking roast duck restaurant","tags":["peking duck","roast duck","chinese"]},{"name":"Xinjiang food","query":"xinjiang restaurant","tags":["xinjiang","uyghur","central asian","chinese"]}],"strengths":[]}';
+const BEIJING = '{"size":"major","local":[{"name":"Peking roast duck","query":"peking roast duck restaurant","tags":["peking duck","roast duck","chinese"]},{"name":"Xinjiang food","query":"xinjiang restaurant","tags":["xinjiang","uyghur","central asian","chinese"]}],"strengths":[]}';
 
 Deno.test('away: local specialties first, your cuisines only if local, others only standouts; profile asked once', async () => {
   const asked: string[] = [];
@@ -156,7 +156,7 @@ Deno.test('chains: listed chains and repeated names skipped; away, few reviews o
   });
   await discoverGoogle({ type: 'discover', mode: 'google', lat: 39.9, lng: 116.4, area_name: 'Beijing' }, d);
   const ids = saved[0].scores.map((s) => s.google_place_id).sort();
-  eq(ids, ['D1', 'D2', 'X1']); // local duck house kept (repeat ok, few reviews ok); Pizza Hut and the repeated pizza place dropped
+  eq(ids, ['D1', 'X1']); // local duck house kept once (few reviews ok); Pizza Hut and the repeated pizza place dropped
   eq(saved[0].rows.find((r) => r.google_place_id === 'D1')?.what_it_says, 'Only 8 reviews on Google.');
 });
 
@@ -220,4 +220,35 @@ Deno.test('web limit: a per-user limit replaces the default', async () => {
   const t2: Record<string, unknown> = {};
   const r = await discoverWeb({ type: 'discover', mode: 'web', lat: 45.52, lng: -122.68 }, deps({ webRunsToday: async () => 10, webLimit: async () => 10 }).d, t2);
   eq([t2.kind, r.message?.includes('limited to 10')], ['web-limited', true]);
+});
+
+Deno.test('away: whole-label matching; small town skips the standout search; local searches keep the top 8, one branch each', async () => {
+  const town = '{"size":"small","local":[{"name":"Indian tacos","query":"indian taco","tags":["native american","frybread"]}],"strengths":[]}';
+  const p = parseAreaProfile(town)!;
+  ok(!matches('indian', p.local[0]));
+  const searches: string[] = [];
+  const many = Array.from({ length: 12 }, (_, i) => P(`T${i}`, i === 1 ? 'Taco Spot' : i === 0 ? 'Taco Spot' : `Place ${i}`, ['restaurant'], 4.5, 50));
+  const { d, saved } = deps({
+    home: async () => ({ lat: 37.77, lng: -122.25 }),
+    getAreaProfile: async () => p,
+    topCuisines: async () => ['indian', 'japanese'],
+    googleSearch: async (q) => (searches.push(q), q === 'indian taco' ? many : []),
+  });
+  const trace: Record<string, unknown> = {};
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 44.08, lng: -103.23, area_name: 'Rapid City' }, d, trace);
+  eq(searches, ['indian taco']); // no "indian restaurant" as yours-and-local, no standout search in a small town
+  eq(saved[0].scores.length, 7); // top 8, minus the second Taco Spot
+  const drops = (trace.searches as { dropped: { reason: string }[] }[])[0].dropped.map((x) => x.reason);
+  ok(drops.includes('another branch, kept the first') && drops.filter((r) => r.startsWith('beyond the top 8')).length === 4);
+});
+
+Deno.test('away: a saved profile without a size is asked again once', async () => {
+  let asked = 0;
+  const { d } = deps({
+    home: async () => ({ lat: 37.77, lng: -122.25 }),
+    getAreaProfile: async () => ({ local: [{ name: 'X', query: 'x', tags: ['x'] }], strengths: [] }),
+    claudeText: async () => (asked++, BEIJING),
+  });
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 39.9, lng: 116.4 }, d);
+  eq(asked, 1);
 });
