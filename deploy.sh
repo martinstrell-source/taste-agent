@@ -1,0 +1,35 @@
+#!/bin/bash
+# Deploys Supabase changes from this folder: new schema files first, then the Edge Functions.
+#   ./deploy.sh              schema changes and both functions
+#   ./deploy.sh functions    functions only
+#   ./deploy.sh schema       schema changes only
+# Schema changes live in supabase/migrations (from schema v9 on; v1-v8 were run by hand). The CLI records
+# each one it runs in the database and never runs one twice. It lists them and asks before running.
+# Needs, once: brew install supabase/tap/supabase, then: supabase login
+set -euo pipefail
+cd "$(dirname "$0")"
+
+command -v supabase >/dev/null || { echo "Supabase CLI not installed. Run: brew install supabase/tap/supabase"; exit 1; }
+[ -f .env ] || { echo "No .env here"; exit 1; }
+
+val() { grep -E "^$1=" .env | head -1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//'; }
+DB_URL=$(val SUPABASE_DB_URL)
+REF=$(val SUPABASE_URL | sed -E 's#https://([^.]+)\.supabase\.co.*#\1#')
+[ -n "$DB_URL" ] || { echo "SUPABASE_DB_URL missing from .env"; exit 1; }
+[ -n "$REF" ] || { echo "SUPABASE_URL missing from .env"; exit 1; }
+
+what=${1:-all}
+
+if [ "$what" = all ] || [ "$what" = schema ]; then
+  echo "== Schema changes"
+  supabase db push --db-url "$DB_URL"
+fi
+
+if [ "$what" = all ] || [ "$what" = functions ]; then
+  for fn in capture place-details; do
+    echo "== Function: $fn"
+    supabase functions deploy "$fn" --project-ref "$REF" --no-verify-jwt --use-api
+  done
+fi
+
+echo "== Done"

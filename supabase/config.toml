@@ -1,0 +1,10 @@
+# Supabase CLI settings for deploy.sh. The project is chosen from SUPABASE_URL in .env, not from here.
+project_id = "taste-agent"
+
+# The app calls these functions with the user's sign-in; each function checks it in code,
+# so the gateway's own check stays off (same as the dashboard setting).
+[functions.capture]
+verify_jwt = false
+
+[functions.place-details]
+verify_jwt = false
