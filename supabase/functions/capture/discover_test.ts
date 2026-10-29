@@ -212,3 +212,12 @@ Deno.test('trace: a web run over the daily limit is marked, not counted', async 
   await discoverWeb({ type: 'discover', mode: 'web', lat: 45.52, lng: -122.68 }, deps({ webRunsToday: async () => 3 }).d, trace);
   eq(trace.kind, 'web-limited');
 });
+
+Deno.test('web limit: a per-user limit replaces the default', async () => {
+  const t1: Record<string, unknown> = {};
+  await discoverWeb({ type: 'discover', mode: 'web', lat: 45.52, lng: -122.68 }, deps({ webRunsToday: async () => 3, webLimit: async () => 10 }).d, t1);
+  eq(t1.kind, 'web');
+  const t2: Record<string, unknown> = {};
+  const r = await discoverWeb({ type: 'discover', mode: 'web', lat: 45.52, lng: -122.68 }, deps({ webRunsToday: async () => 10, webLimit: async () => 10 }).d, t2);
+  eq([t2.kind, r.message?.includes('limited to 10')], ['web-limited', true]);
+});

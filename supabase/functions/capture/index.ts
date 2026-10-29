@@ -171,6 +171,10 @@ Deno.serve(async (req) => {
           const { count } = await admin.from('discover_runs').select('id', { count: 'exact', head: true }).eq('user_id', uid).in('kind', ['web', 'web-started']).neq('id', runId ?? -1).gte('created_at', since);
           return count ?? 0;
         },
+        webLimit: async () => {
+          const { data } = await admin.from('app_users').select('discover_web_per_day').eq('user_id', uid).maybeSingle();
+          return (data?.discover_web_per_day as number | null | undefined) ?? null;
+        },
         googleSearch: googleInBox,
         claudeWeb,
         home: async () => {

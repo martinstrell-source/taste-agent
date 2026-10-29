@@ -51,6 +51,7 @@ export type DiscoverDeps = {
   knownIds: () => Promise<Set<string>>; // saved or reacted to: never suggested
   cachedQueries: (areaKey: string, days: number) => Promise<Set<string>>; // item_ids searched recently
   webRunsToday: () => Promise<number>;
+  webLimit?: () => Promise<number | null>; // this user's own daily web limit, if set (else WEB_PER_DAY)
   googleSearch: (query: string, box: Box, rating: boolean) => Promise<Place[]>;
   claudeWeb: (prompt: string) => Promise<WebResult>;
   save: (items: { item_id: string; source: string; title: string; link: string | null }[], rows: CandidateRow[], scores: Score[], areaKey: string, mode: string) => Promise<void>;
@@ -401,9 +402,11 @@ export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps, trac
     trace.result = { reused_from_last_30_days: true, places: scores.length };
     return { mode: 'web', area: key, cached: true, places: scores.length };
   }
-  if ((await deps.webRunsToday()) >= WEB_PER_DAY) {
+  const limit = (await deps.webLimit?.().catch(() => null)) ?? WEB_PER_DAY;
+  if ((await deps.webRunsToday()) >= limit) {
     trace.kind = 'web-limited';
-    return { mode: 'web', area: key, places: 0, message: `Web search is limited to ${WEB_PER_DAY} new areas a day. The quick results are still here.` };
+    trace.limit = limit;
+    return { mode: 'web', area: key, places: 0, message: `Web search is limited to ${limit} new areas a day. The quick results are still here.` };
   }
 
   const prompt = webPrompt(input.area_name || `the area around ${input.lat.toFixed(3)}, ${input.lng.toFixed(3)}`, cuisines, away);

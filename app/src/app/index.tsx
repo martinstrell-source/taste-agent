@@ -35,7 +35,7 @@ import {
   type Kind,
 } from '@/lib/format';
 import { hidePlace, moveToList, undoHide, type HideReason } from '@/lib/hide';
-import { areaName, runDiscover } from '@/lib/discover';
+import { areaName, isTimeout, runDiscover, waitForWebRun } from '@/lib/discover';
 import { notInterested, saveFromPick, undoPick } from '@/lib/picks';
 import { suggestPlaces, type Suggestion } from '@/lib/places-search';
 import { isOpenNow } from '@/lib/hours';
@@ -360,7 +360,19 @@ export default function Nearby() {
       chooseSort('match');
       setCenter({ ...at });
       setDiscovering(`Found ${quick.places} nearby. Searching the local food press…`);
-      const web = await runDiscover('web', at.lat, at.lng, 8000, name);
+      const startedAt = Date.now();
+      let web: { places: number; cached?: boolean; message?: string };
+      try {
+        web = await runDiscover('web', at.lat, at.lng, 8000, name);
+      } catch (e) {
+        if (!isTimeout(e)) throw e;
+        // the phone stopped waiting; the server keeps going and saves the picks, so watch for it to finish
+        setDiscovering('Still searching the local food press…');
+        web = (await waitForWebRun(at.lat, at.lng, startedAt)) ?? {
+          places: 0,
+          message: 'The web search is taking longer than usual. New picks will show the next time the list reloads.',
+        };
+      }
       setReload((n) => n + 1);
       setDiscovering(
         web.message ??
