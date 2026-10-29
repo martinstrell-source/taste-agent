@@ -167,3 +167,48 @@ Deno.test('chains: near home, a name twice in one search is skipped', async () =
   await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, d);
   eq(saved[0].scores.map((s) => s.google_place_id), ['K3']);
 });
+
+Deno.test('trace: google run records each search, kept places and every drop with its reason', async () => {
+  const trace: Record<string, unknown> = {};
+  const { d } = deps();
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68, area_name: 'Portland' }, d, trace);
+  eq([trace.mode, trace.kind, trace.away], ['google', 'google', false]);
+  const s = (trace.searches as { query: string; kept: string[]; dropped: { name: string; reason: string }[] }[]);
+  const uy = s.find((x) => x.query.startsWith('uyghur'))!;
+  ok(uy.kept[0].startsWith('Kashgar Kitchen'));
+  eq(uy.dropped.map((x) => x.reason).sort(), ['already on your lists or rated', 'rating 3.9 from 300 reviews, under 4.3']);
+  const best = s.find((x) => x.query === 'best restaurants')!;
+  ok(best.dropped.some((x) => x.name === 'Gone' && x.reason.startsWith('not open')));
+  const jp = s.find((x) => x.query.startsWith('japanese'))!;
+  ok(jp.dropped.some((x) => x.name === 'Garage' && x.reason.startsWith('not food')));
+  const out = Deno.env.get('TRACE_OUT');
+  if (out) Deno.writeTextFileSync(`${out}/google.json`, JSON.stringify(trace));
+});
+
+Deno.test('trace: web run records what Claude searched, the pages, the answer, and each place it named', async () => {
+  const trace: Record<string, unknown> = {};
+  const { d } = deps({
+    home: async () => ({ lat: 37.77, lng: -122.25 }),
+    getAreaProfile: async () => parseAreaProfile(BEIJING),
+    claudeWeb: async () => ({
+      text: '```json\n[{"name":"Lardo","city":"Portland","cuisine":"sandwiches","source":"Eater","source_url":"https://e/x"},{"name":"Nowhere Cafe","city":"Portland","source":"Blog","source_url":"https://b/y"},{"name":"No Link","source_url":""}]\n```',
+      searches: 2, queries: ['best new portland restaurants', 'portland sandwiches'], pages: [{ url: 'https://e/x', title: 'Best' }],
+    }),
+  });
+  await discoverWeb({ type: 'discover', mode: 'web', lat: 45.52, lng: -122.68, area_name: 'Portland' }, d, trace);
+  eq([trace.kind, trace.away], ['web', true]);
+  eq((trace.claude as { queries: string[] }).queries.length, 2);
+  const f = trace.found as { name: string; result: string }[];
+  ok(f.find((x) => x.name === 'Lardo')!.result.startsWith('kept'));
+  ok(f.find((x) => x.name === 'Nowhere Cafe')!.result.startsWith('not found on Google'));
+  eq(f.find((x) => x.name === 'No Link')!.result, 'no source link');
+  eq((trace.city_profile as { from: string }).from, 'saved');
+  const out = Deno.env.get('TRACE_OUT');
+  if (out) Deno.writeTextFileSync(`${out}/web.json`, JSON.stringify(trace));
+});
+
+Deno.test('trace: a web run over the daily limit is marked, not counted', async () => {
+  const trace: Record<string, unknown> = {};
+  await discoverWeb({ type: 'discover', mode: 'web', lat: 45.52, lng: -122.68 }, deps({ webRunsToday: async () => 3 }).d, trace);
+  eq(trace.kind, 'web-limited');
+});

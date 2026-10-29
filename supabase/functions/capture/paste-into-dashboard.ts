@@ -74,6 +74,8 @@ async function claudeWeb(prompt: string) {
   };
   let text = '';
   let searches = 0;
+  const queries: string[] = [];
+  const pages: { url: string; title: string }[] = [];
   for (let i = 0; i < 3; i++) {
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -83,11 +85,18 @@ async function claudeWeb(prompt: string) {
     if (!r.ok) throw new Error(`Claude ${r.status}: ${(await r.text()).slice(0, 200)}`);
     const d = await r.json();
     searches += d.usage?.server_tool_use?.web_search_requests ?? 0;
+    // for the trace: what Claude searched for and which pages came back
+    for (const b of d.content ?? []) {
+      if (b.type === 'server_tool_use' && b.input?.query) queries.push(String(b.input.query));
+      if (b.type === 'web_search_tool_result' && Array.isArray(b.content)) {
+        for (const r of b.content) if (r?.url) pages.push({ url: String(r.url), title: String(r.title ?? '') });
+      }
+    }
     text = (d.content ?? []).filter((b: { type: string }) => b.type === 'text').map((b: { text: string }) => b.text).join('');
     if (d.stop_reason !== 'pause_turn') break;
     body.messages = [{ role: 'user', content: prompt }, { role: 'assistant', content: d.content }];
   }
-  return { text, searches };
+  return { text, searches, queries, pages };
 }
 
 async function googleSearch(query: string, bias?: { lat: number; lng: number }) {
@@ -139,6 +148,7 @@ Deno.serve(async (req) => {
         return Response.json({ error: 'lat and lng are required' }, { status: 400, headers: cors });
       }
       const uid = who.user.id;
+      let runId: number | undefined; // this run's discover_runs row, left out of the daily count
       const ddeps: DiscoverDeps = {
         topCuisines: async () => {
           const { data } = await admin.from('user_profiles').select('profile').eq('user_id', uid).maybeSingle();
@@ -159,7 +169,7 @@ Deno.serve(async (req) => {
         },
         webRunsToday: async () => {
           const since = new Date(Date.now() - 86_400_000).toISOString();
-          const { count } = await admin.from('discover_runs').select('id', { count: 'exact', head: true }).eq('user_id', uid).eq('kind', 'web').gte('created_at', since);
+          const { count } = await admin.from('discover_runs').select('id', { count: 'exact', head: true }).eq('user_id', uid).in('kind', ['web', 'web-started']).neq('id', runId ?? -1).gte('created_at', since);
           return count ?? 0;
         },
         googleSearch: googleInBox,
@@ -202,11 +212,28 @@ Deno.serve(async (req) => {
           if (scores.length) {
             await admin.from('pick_scores').upsert(scores.map((x) => ({ user_id: uid, google_place_id: x.google_place_id, score: x.score, reason: x.reason, source: 'discover', updated_at: new Date().toISOString() })), { onConflict: 'user_id,google_place_id' });
           }
-          if (mode === 'web') await admin.from('discover_runs').insert({ user_id: uid, area_key: key, kind: 'web' });
         },
       };
-      const out = d.mode === 'web' ? await discoverWeb(d, ddeps) : await discoverGoogle(d, ddeps);
-      return Response.json(out, { headers: cors });
+      // every run is saved with its trace, success or not. The row is written first as '<mode>-started', so a run
+      // cut off by a time limit still shows up (a 'web-started' row also counts toward the daily web limit).
+      const trace: Trace = { area_name: d.area_name ?? null, lat: d.lat, lng: d.lng, radius_m: d.radius_m ?? null };
+      const t0 = Date.now();
+      let error: string | null = null;
+      const { data: run } = await admin.from('discover_runs')
+        .insert({ user_id: uid, area_key: areaKey(d.lat, d.lng), area_name: d.area_name ?? null, kind: `${d.mode}-started`, trace })
+        .select('id').single();
+      runId = run?.id as number | undefined;
+      try {
+        const out = d.mode === 'web' ? await discoverWeb(d, ddeps, trace) : await discoverGoogle(d, ddeps, trace);
+        return Response.json(out, { headers: cors });
+      } catch (e) {
+        error = (e as Error).message;
+        throw e;
+      } finally {
+        const done = { kind: (trace.kind as string) ?? `${d.mode}-error`, ms: Date.now() - t0, error, trace };
+        if (run?.id) await admin.from('discover_runs').update(done).eq('id', run.id);
+        else await admin.from('discover_runs').insert({ user_id: uid, area_key: areaKey(d.lat, d.lng), area_name: d.area_name ?? null, ...done });
+      }
     }
     const deps = { fetchPage, claude, googleSearch, shorthand: sh ?? [] };
     const result = input.type === 'bill' ? await readBill(input, deps) : await capture(input, deps);
@@ -499,6 +526,8 @@ export async function capture(input: Input, deps: Deps): Promise<Result> {
 // known for: local specialties first, the user's cuisines when they are also a local strength, things the
 // city does especially well (pizza and coffee in Tokyo), and other cuisines only when the place is a standout.
 // What each city is known for is asked once and shared by all users (area_profiles).
+// Each run fills a trace (what was searched, what came back, what was dropped and why); index.ts saves it
+// in discover_runs.
 // Pure logic with injected calls so it can be tested; index.ts wires it up.
 
 export type DiscoverInput = { type: 'discover'; mode: 'google' | 'web'; lat: number; lng: number; radius_m?: number; area_name?: string };
@@ -529,6 +558,9 @@ export type CandidateRow = {
   tone: string;
 };
 export type Score = { google_place_id: string; score: number; reason: string };
+// filled in as a run goes; saved by index.ts whether the run succeeds or fails
+export type Trace = Record<string, unknown>;
+export type WebResult = { text: string; searches: number; queries?: string[]; pages?: { url: string; title: string }[] };
 export type Specialty = { name: string; query: string; tags: string[] };
 export type AreaProfile = { local: Specialty[]; strengths: Specialty[] };
 
@@ -538,7 +570,7 @@ export type DiscoverDeps = {
   cachedQueries: (areaKey: string, days: number) => Promise<Set<string>>; // item_ids searched recently
   webRunsToday: () => Promise<number>;
   googleSearch: (query: string, box: Box, rating: boolean) => Promise<DPlace[]>;
-  claudeWeb: (prompt: string) => Promise<{ text: string; searches: number }>;
+  claudeWeb: (prompt: string) => Promise<WebResult>;
   save: (items: { item_id: string; source: string; title: string; link: string | null }[], rows: CandidateRow[], scores: Score[], areaKey: string, mode: string) => Promise<void>;
   existingForArea: (areaKey: string, prefix: string) => Promise<{ google_place_id: string; name?: string | null; cuisine: string | null; source: string }[]>;
   home: () => Promise<{ lat: number; lng: number } | null>; // center of most of the user's saves
@@ -624,14 +656,25 @@ export function matches(cuisine: string, sp: Specialty): boolean {
 }
 
 // away from home? and if so, what the place is known for (asked once per city, shared)
-export async function awayProfile(input: DiscoverInput, deps: DiscoverDeps): Promise<AreaProfile | null> {
+export async function awayProfile(input: DiscoverInput, deps: DiscoverDeps, trace: Trace = {}): Promise<AreaProfile | null> {
   const home = await deps.home();
-  if (!home || km(home, { lat: input.lat, lng: input.lng }) < AWAY_KM) return null;
+  const dist = home ? Math.round(km(home, { lat: input.lat, lng: input.lng })) : null;
+  trace.km_from_home = dist;
+  if (dist == null || dist < AWAY_KM) {
+    trace.away = false;
+    return null;
+  }
+  trace.away = true;
   const ck = cityKey(input.lat, input.lng);
   const have = await deps.getAreaProfile(ck);
-  if (have) return have;
+  if (have) {
+    trace.city_profile = { city_key: ck, from: 'saved', ...have };
+    return have;
+  }
   const area = input.area_name || `the area around ${input.lat.toFixed(2)}, ${input.lng.toFixed(2)}`;
-  const p = parseAreaProfile(await deps.claudeText(areaPrompt(area)).catch(() => ''));
+  const answer = await deps.claudeText(areaPrompt(area)).catch((e) => `error: ${(e as Error).message}`);
+  const p = parseAreaProfile(answer);
+  trace.city_profile = p ? { city_key: ck, from: 'asked Claude', ...p } : { city_key: ck, from: 'asked Claude, could not read the answer', answer: answer.slice(0, 2000) };
   if (p) await deps.saveAreaProfile(ck, area, p).catch(() => {});
   return p;
 }
@@ -695,12 +738,14 @@ function quality(rating: number | undefined, count: number | undefined): number 
 
 // ---------- quick: Google ----------
 
-export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps) {
+export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, trace: Trace = {}) {
   const key = areaKey(input.lat, input.lng);
+  trace.mode = 'google';
   const box = boxAround(input.lat, input.lng, Math.min(Math.max(input.radius_m ?? 6000, 2000), 15000));
   const all = (await deps.topCuisines()).filter((c) => !TOO_BROAD.has(c));
-  const away = await awayProfile(input, deps);
+  const away = await awayProfile(input, deps, trace);
   const here = input.area_name ?? 'here';
+  trace.your_cuisines = all.slice(0, 8);
   // kind sets how much a result counts (base) and the bar it has to clear (strict = standouts only)
   type Q = { c: string; q: string; label: string; cuisine: string | null; base: number; strict: boolean; local?: boolean; reason: string };
   let queries: Q[];
@@ -728,18 +773,26 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps) {
   const rows: CandidateRow[] = [];
   const scores = new Map<string, Score>();
   let searched = 0;
+  const tsearches: Record<string, unknown>[] = [];
+  trace.searches = tsearches;
 
   await Promise.all(
     queries.map(async (Q) => {
       const { c, q } = Q;
       const itemId = `here:${key}:g:${c}`;
       let places: DPlace[] = [];
+      const kept: string[] = [];
+      const dropped: { name: string; reason: string }[] = [];
+      const ts: Record<string, unknown> = { query: q, why: Q.reason, bar: Q.strict ? 'standout only' : Q.local ? 'local specialty' : 'normal', kept, dropped };
+      tsearches.push(ts);
       if (cached.has(itemId)) {
         // searched recently for this area: reuse what's in the pool
         const prev = await deps.existingForArea(key, itemId);
-        places = prev.filter((p) => !isChain(p.name ?? '')).map((p) => ({ id: p.google_place_id, _cached: true }));
+        ts.reused_from_last_30_days = true;
+        for (const p of prev) if (isChain(p.name ?? '')) dropped.push({ name: p.name ?? '', reason: 'chain' });
+        places = prev.filter((p) => !isChain(p.name ?? '')).map((p) => ({ id: p.google_place_id, _cached: true, _name: p.name ?? '' }));
       } else {
-        places = await deps.googleSearch(q, box, true).catch(() => []);
+        places = await deps.googleSearch(q, box, true).catch((e) => ((ts.error = (e as Error).message), []));
         searched += 1;
         items.push({ item_id: itemId, source: 'Google Maps search', title: Q.label, link: null });
       }
@@ -747,19 +800,26 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps) {
       const nameOf = (g: DPlace) => ((g.displayName as { text?: string } | undefined)?.text ?? '').trim().toLowerCase();
       const seen = new Map<string, number>();
       for (const g of places) if (!g._cached) seen.set(nameOf(g), (seen.get(nameOf(g)) ?? 0) + 1);
+      ts.results = places.length;
       places.forEach((g, rank) => {
         const id = g.id as string;
-        if (!id || known.has(id)) return;
+        const label = ((g.displayName as { text?: string } | undefined)?.text ?? (g._name as string) ?? id ?? '').trim();
+        const drop = (reason: string) => void dropped.push({ name: label, reason });
+        if (!id) return;
+        if (known.has(id)) return drop('already on your lists or rated');
         if (!g._cached) {
-          if (isChain(nameOf(g)) || (!Q.local && (seen.get(nameOf(g)) ?? 0) > 1)) return;
+          if (isChain(nameOf(g))) return drop('chain');
+          if (!Q.local && (seen.get(nameOf(g)) ?? 0) > 1) return drop('same name twice in this search (chain)');
           const types = (g.types as string[] | undefined) ?? [];
           const count = (g.userRatingCount as number | undefined) ?? 0;
-          if ((g.businessStatus ?? 'OPERATIONAL') !== 'OPERATIONAL' || !types.some((t) => FOOD_D.test(t))) return;
+          if ((g.businessStatus ?? 'OPERATIONAL') !== 'OPERATIONAL') return drop(`not open (${g.businessStatus})`);
+          if (!types.some((t) => FOOD_D.test(t))) return drop(`not food (${types.slice(0, 3).join(', ')})`);
           const rating = (g.rating as number | undefined) ?? 0;
-          if (count >= 20 && rating < 4.3) return;
-          if (Q.strict && (count < 150 || rating < 4.6)) return; // away from home, a non-local cuisine has to be a standout
+          if (count >= 20 && rating < 4.3) return drop(`rating ${rating} from ${count} reviews, under 4.3`);
+          // away from home, a non-local cuisine has to be a standout
+          if (Q.strict && (count < 150 || rating < 4.6)) return drop(`not a standout: ${rating} from ${count} reviews (needs 4.6+ and 150+)`);
           // away from home, few reviews often means few people use Google there, not a new place
-          if (away && count < 20 && !Q.local) return;
+          if (away && count < 20 && !Q.local) return drop(`only ${count} Google reviews, away from home`);
           const row = toRow(g, itemId, 'Google Maps search', Q.label, null, {
             cuisine: Q.cuisine,
             what_it_says: count < 20 ? (away ? `Only ${count} reviews on Google.` : `New: ${count} reviews on Google.`) : `${(g.rating as number).toFixed(1)} stars from ${count} reviews on Google.`,
@@ -771,6 +831,7 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps) {
         const fit = Q.base * (1 - rank / 25);
         const score = 0.6 * fit + 0.4 * quality(g.rating as number, g.userRatingCount as number);
         const reason = Q.reason;
+        kept.push(`${label} (${Math.round(score * 100)})`);
         const prev = scores.get(id);
         if (!prev || score > prev.score) scores.set(id, { google_place_id: id, score: Math.round(score * 1000) / 1000, reason });
       });
@@ -778,6 +839,8 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps) {
   );
 
   await deps.save(items, rows, [...scores.values()], key, 'google');
+  trace.kind = 'google';
+  trace.result = { searched, reused: queries.length - searched, places: scores.size };
   return { mode: 'google', area: key, away: !!away, searched, places: scores.size };
 }
 
@@ -835,13 +898,15 @@ function similar(a: string, b: string): boolean {
   return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
 }
 
-export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps) {
+export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps, trace: Trace = {}) {
   const key = areaKey(input.lat, input.lng);
+  trace.mode = 'web';
   const box = boxAround(input.lat, input.lng, Math.min(Math.max(input.radius_m ?? 6000, 3000), 20000));
   const cached = await deps.cachedQueries(key, CACHE_DAYS);
   const known = await deps.knownIds();
   const cuisines = (await deps.topCuisines()).filter((c) => !TOO_BROAD.has(c)).slice(0, 6);
-  const away = await awayProfile(input, deps);
+  const away = await awayProfile(input, deps, trace);
+  trace.your_cuisines = cuisines;
 
   if ([...cached].some((id) => id.startsWith(`here:${key}:w:`))) {
     // the web was searched for this area recently (by anyone): reuse, and score for this user
@@ -850,29 +915,44 @@ export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps) {
       .filter((p) => !known.has(p.google_place_id) && !isChain(p.name ?? ''))
       .map((p) => ({ google_place_id: p.google_place_id, score: 0.55, reason: `From ${p.source}` }));
     await deps.save([], [], scores, key, 'web-cached');
+    trace.kind = 'web-cached';
+    trace.result = { reused_from_last_30_days: true, places: scores.length };
     return { mode: 'web', area: key, cached: true, places: scores.length };
   }
   if ((await deps.webRunsToday()) >= WEB_PER_DAY) {
+    trace.kind = 'web-limited';
     return { mode: 'web', area: key, places: 0, message: `Web search is limited to ${WEB_PER_DAY} new areas a day. The quick results are still here.` };
   }
 
-  const { text, searches } = await deps.claudeWeb(webPrompt(input.area_name || `the area around ${input.lat.toFixed(3)}, ${input.lng.toFixed(3)}`, cuisines, away));
+  const prompt = webPrompt(input.area_name || `the area around ${input.lat.toFixed(3)}, ${input.lng.toFixed(3)}`, cuisines, away);
+  trace.kind = 'web'; // counts toward the daily limit even if a later step fails
+  trace.prompt = prompt;
+  const { text, searches, queries, pages } = await deps.claudeWeb(prompt);
   const found = parseWeb(text);
+  const tfound: { name: string; source: string; url: string; result: string }[] = [];
+  trace.claude = { searches, queries: queries ?? [], pages: (pages ?? []).slice(0, 60), answer: text.slice(0, 20000) };
+  trace.found = tfound;
   const items: { item_id: string; source: string; title: string; link: string | null }[] = [];
   const rows: CandidateRow[] = [];
   const scores: Score[] = [];
   await Promise.all(
     found.map(async (f, i) => {
-      if (!/^https?:\/\//.test(f.source_url)) return;
+      const t = { name: f.name, source: f.source, url: f.source_url, result: '' };
+      tfound.push(t);
+      const drop = (reason: string) => void (t.result = reason);
+      if (!/^https?:\/\//.test(f.source_url)) return drop('no source link');
       const res = await deps.googleSearch(`${f.name} ${f.city}`, box, false).catch(() => []);
       const g = res.find((r) => similar(f.name, ((r.displayName as { text?: string } | undefined)?.text ?? '')));
-      if (!g || (g.businessStatus ?? 'OPERATIONAL') !== 'OPERATIONAL' || isChain(((g.displayName as { text?: string } | undefined)?.text ?? ''))) return;
+      if (!g) return drop(`not found on Google in the area (Google had: ${res.slice(0, 3).map((r) => (r.displayName as { text?: string } | undefined)?.text).join(', ') || 'nothing'})`);
+      if ((g.businessStatus ?? 'OPERATIONAL') !== 'OPERATIONAL') return drop(`not open (${g.businessStatus})`);
+      if (isChain(((g.displayName as { text?: string } | undefined)?.text ?? ''))) return drop('chain');
       const itemId = `here:${key}:w:${f.source_url}`.slice(0, 500);
       if (!items.some((x) => x.item_id === itemId)) items.push({ item_id: itemId, source: f.source, title: f.source_title || f.source, link: f.source_url });
       const row = toRow(g, itemId, f.source, f.source_title || f.source, f.source_url, {
         mention_type: 'list_entry', cuisine: f.cuisine || null, dishes: f.dishes, what_it_says: f.why, tone: 'positive',
       });
-      if (!row || known.has(row.google_place_id)) return;
+      if (!row) return drop('no Google id');
+      if (known.has(row.google_place_id)) return drop('already on your lists or rated');
       rows.push(row);
       const liked = !!f.cuisine && cuisines.some((c) => f.cuisine.includes(nice(c)) || nice(c).includes(f.cuisine));
       const local = !!away && [...away.local, ...away.strengths].some((sp) => (!!f.cuisine && matches(f.cuisine, sp)) || f.dishes.some((x) => matches(x, sp)));
@@ -882,9 +962,11 @@ export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps) {
         : liked ? `${cap(f.cuisine)}, a favorite of yours; from ${f.source}`
         : `From ${f.source}`;
       scores.push({ google_place_id: row.google_place_id, score: Math.round(score * 1000) / 1000, reason });
+      t.result = `kept (${Math.round(score * 100)}): ${reason}`;
     }),
   );
   if (!items.length) items.push({ item_id: `here:${key}:w:none`, source: 'Web', title: 'No web results', link: null });
   await deps.save(items, rows, scores, key, 'web');
+  trace.result = { searches, found: found.length, places: scores.length };
   return { mode: 'web', area: key, searches, places: scores.length };
 }

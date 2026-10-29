@@ -10,7 +10,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 
 import { capture, type Input, readBill, SYSTEM } from './core.ts';
-import { type AreaProfile, type Box, type DiscoverDeps, type DiscoverInput, discoverGoogle, discoverWeb } from './discover.ts';
+import { type AreaProfile, areaKey, type Box, type DiscoverDeps, type DiscoverInput, discoverGoogle, discoverWeb, type Trace } from './discover.ts';
 
 const URL_ = Deno.env.get('SUPABASE_URL')!;
 const firstKey = (json: string | undefined) => {
@@ -73,6 +73,8 @@ async function claudeWeb(prompt: string) {
   };
   let text = '';
   let searches = 0;
+  const queries: string[] = [];
+  const pages: { url: string; title: string }[] = [];
   for (let i = 0; i < 3; i++) {
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -82,11 +84,18 @@ async function claudeWeb(prompt: string) {
     if (!r.ok) throw new Error(`Claude ${r.status}: ${(await r.text()).slice(0, 200)}`);
     const d = await r.json();
     searches += d.usage?.server_tool_use?.web_search_requests ?? 0;
+    // for the trace: what Claude searched for and which pages came back
+    for (const b of d.content ?? []) {
+      if (b.type === 'server_tool_use' && b.input?.query) queries.push(String(b.input.query));
+      if (b.type === 'web_search_tool_result' && Array.isArray(b.content)) {
+        for (const r of b.content) if (r?.url) pages.push({ url: String(r.url), title: String(r.title ?? '') });
+      }
+    }
     text = (d.content ?? []).filter((b: { type: string }) => b.type === 'text').map((b: { text: string }) => b.text).join('');
     if (d.stop_reason !== 'pause_turn') break;
     body.messages = [{ role: 'user', content: prompt }, { role: 'assistant', content: d.content }];
   }
-  return { text, searches };
+  return { text, searches, queries, pages };
 }
 
 async function googleSearch(query: string, bias?: { lat: number; lng: number }) {
@@ -138,6 +147,7 @@ Deno.serve(async (req) => {
         return Response.json({ error: 'lat and lng are required' }, { status: 400, headers: cors });
       }
       const uid = who.user.id;
+      let runId: number | undefined; // this run's discover_runs row, left out of the daily count
       const ddeps: DiscoverDeps = {
         topCuisines: async () => {
           const { data } = await admin.from('user_profiles').select('profile').eq('user_id', uid).maybeSingle();
@@ -158,7 +168,7 @@ Deno.serve(async (req) => {
         },
         webRunsToday: async () => {
           const since = new Date(Date.now() - 86_400_000).toISOString();
-          const { count } = await admin.from('discover_runs').select('id', { count: 'exact', head: true }).eq('user_id', uid).eq('kind', 'web').gte('created_at', since);
+          const { count } = await admin.from('discover_runs').select('id', { count: 'exact', head: true }).eq('user_id', uid).in('kind', ['web', 'web-started']).neq('id', runId ?? -1).gte('created_at', since);
           return count ?? 0;
         },
         googleSearch: googleInBox,
@@ -201,11 +211,28 @@ Deno.serve(async (req) => {
           if (scores.length) {
             await admin.from('pick_scores').upsert(scores.map((x) => ({ user_id: uid, google_place_id: x.google_place_id, score: x.score, reason: x.reason, source: 'discover', updated_at: new Date().toISOString() })), { onConflict: 'user_id,google_place_id' });
           }
-          if (mode === 'web') await admin.from('discover_runs').insert({ user_id: uid, area_key: key, kind: 'web' });
         },
       };
-      const out = d.mode === 'web' ? await discoverWeb(d, ddeps) : await discoverGoogle(d, ddeps);
-      return Response.json(out, { headers: cors });
+      // every run is saved with its trace, success or not. The row is written first as '<mode>-started', so a run
+      // cut off by a time limit still shows up (a 'web-started' row also counts toward the daily web limit).
+      const trace: Trace = { area_name: d.area_name ?? null, lat: d.lat, lng: d.lng, radius_m: d.radius_m ?? null };
+      const t0 = Date.now();
+      let error: string | null = null;
+      const { data: run } = await admin.from('discover_runs')
+        .insert({ user_id: uid, area_key: areaKey(d.lat, d.lng), area_name: d.area_name ?? null, kind: `${d.mode}-started`, trace })
+        .select('id').single();
+      runId = run?.id as number | undefined;
+      try {
+        const out = d.mode === 'web' ? await discoverWeb(d, ddeps, trace) : await discoverGoogle(d, ddeps, trace);
+        return Response.json(out, { headers: cors });
+      } catch (e) {
+        error = (e as Error).message;
+        throw e;
+      } finally {
+        const done = { kind: (trace.kind as string) ?? `${d.mode}-error`, ms: Date.now() - t0, error, trace };
+        if (run?.id) await admin.from('discover_runs').update(done).eq('id', run.id);
+        else await admin.from('discover_runs').insert({ user_id: uid, area_key: areaKey(d.lat, d.lng), area_name: d.area_name ?? null, ...done });
+      }
     }
     const deps = { fetchPage, claude, googleSearch, shorthand: sh ?? [] };
     const result = input.type === 'bill' ? await readBill(input, deps) : await capture(input, deps);
