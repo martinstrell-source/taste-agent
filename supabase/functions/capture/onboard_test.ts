@@ -63,3 +63,13 @@ Deno.test('screenshot list: every place in order, with the app it came from and 
   eq(parseShot('nope').places, []);
   ok((await screenshotList({ type: 'screenshot_list' }, { claude: async () => '', googleSearch: async () => [] })).message);
 });
+
+Deno.test('pasted list: text goes to Claude with the list prompt, same result shape', async () => {
+  let sent = '';
+  const r = await screenshotList({ type: 'screenshot_list', text: 'Nopa\nDelfina (Mission)' }, {
+    claude: async (c) => ((sent = JSON.stringify(c)), '{"app":null,"places":[{"name":"Nopa"},{"name":"Delfina","location_hint":"Mission"}]}'),
+    googleSearch: async (q) => [G(q.split(' ')[0], q.split(' ')[0], ['restaurant'])],
+  });
+  ok(sent.includes('The list:') && sent.includes('Delfina (Mission)'));
+  eq(r.places.map((p) => p.name), ['Nopa', 'Delfina']);
+});

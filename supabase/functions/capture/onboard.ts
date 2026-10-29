@@ -23,7 +23,7 @@ export type TasteSaveInput = {
   text?: string; // what they wrote, kept with the stated likes
 };
 
-export type ShotInput = { type: 'screenshot_list'; image_base64?: string; lat?: number; lng?: number };
+export type ShotInput = { type: 'screenshot_list'; image_base64?: string; text?: string; lat?: number; lng?: number }; // a screenshot, or pasted text
 export type ShotPlace = { name: string; location_hint: string; note: string; candidates: Candidate[] };
 export type ShotResult = { app: string | null; places: ShotPlace[]; message?: string };
 
@@ -33,7 +33,7 @@ export type OnboardDeps = {
 };
 
 export const MAX_TASTE_PLACES = 12;
-export const MAX_SHOT_PLACES = 30;
+export const MAX_SHOT_PLACES = 40;
 
 // ---------- reading what they like ----------
 
@@ -222,13 +222,25 @@ export function parseShot(text: string): { app: string | null; places: Omit<Shot
   }
 }
 
+export const TEXT_PROMPT = `This is a list of restaurants, cafes, bars or food shops the user pasted (from a notes app,
+a message, a spreadsheet, another app). List every place in it, in order.
+Answer with JSON only:
+{"app": "where the list seems to come from, or null",
+ "places": [{"name": "place name", "location_hint": "neighborhood or city if given, else empty",
+             "note": "anything the user wrote about it, else empty"}]}
+At most ${MAX_SHOT_PLACES} places. Leave out anything that is not a specific place.
+
+The list:
+`;
+
 export async function screenshotList(input: ShotInput, deps: OnboardDeps): Promise<ShotResult> {
-  if (!input.image_base64) return { app: null, places: [], message: 'No screenshot received.' };
-  const parsed = parseShot(await deps.claude([
-    { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: input.image_base64 } },
-    { type: 'text', text: SHOT_PROMPT },
-  ], true));
+  const text = (input.text ?? '').trim();
+  if (!input.image_base64 && !text) return { app: null, places: [], message: 'Nothing received.' };
+  const content = input.image_base64
+    ? [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: input.image_base64 } }, { type: 'text', text: SHOT_PROMPT }]
+    : [{ type: 'text', text: TEXT_PROMPT + text.slice(0, 15000) }];
+  const parsed = parseShot(await deps.claude(content, true));
   const bias = typeof input.lat === 'number' && typeof input.lng === 'number' ? { lat: input.lat, lng: input.lng } : undefined;
   const places = await Promise.all(parsed.places.map(async (p) => ({ ...p, candidates: await candidatesFor(p.name, p.location_hint, bias, deps) })));
-  return { app: parsed.app, places, message: places.length ? undefined : "Couldn't find a list of places in that screenshot." };
+  return { app: parsed.app, places, message: places.length ? undefined : input.image_base64 ? "Couldn't find a list of places in that screenshot." : "Couldn't find any places in that text." };
 }

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { saveCapture, type Candidate } from '@/lib/capture';
-import { getJob, latestTakeout, pickScreenshots, readScreenshot, startTakeoutImport, type ImportJob } from '@/lib/onboard';
+import { getJob, latestTakeout, pickScreenshots, readListText, readScreenshot, startTakeoutImport, type ImportJob, type ShotResult } from '@/lib/onboard';
 import { colors } from '@/lib/theme';
 
 type Props = {
@@ -14,7 +14,8 @@ type Props = {
 };
 
 type Row = { name: string; note: string; candidates: Candidate[]; pick: number | null; status?: string };
-type Tab = 'maps' | 'shots';
+type Tab = 'maps' | 'shots' | 'text';
+const TAB_LABEL: Record<Tab, string> = { maps: 'Google Maps', shots: 'Screenshots', text: 'Text' };
 
 export default function ImportPlaces({ visible, near, onClose, onSaved }: Props) {
   const insets = useSafeAreaInsets();
@@ -32,6 +33,7 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
   const [list, setList] = useState<'want_to_go' | 'favorites'>('want_to_go');
   const [saving, setSaving] = useState(false);
   const [savedCount, setSavedCount] = useState<number | null>(null);
+  const [pasted, setPasted] = useState('');
 
   useEffect(() => {
     if (visible) latestTakeout().then(setJob).catch(() => {});
@@ -65,26 +67,47 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
     }
   }
 
+  // add what Claude found to the list to review, skipping places already in it
+  // (the same place on two overlapping screenshots, or in a list and a screenshot)
+  function addFound(r: ShotResult, seen: Set<string>) {
+    if (r.app) setApp(r.app);
+    const added: Row[] = [];
+    for (const p of r.places) {
+      const key = p.candidates[0]?.google_place_id ?? p.name;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      added.push({ name: p.name, note: p.note, candidates: p.candidates, pick: p.candidates.length ? 0 : null });
+    }
+    setRows((old) => [...old, ...added]);
+    if (r.message && !added.length) setError(r.message);
+  }
+  const seenNow = () => new Set(rows.map((r) => (r.candidates[0]?.google_place_id ?? r.name)));
+
   async function screenshots() {
     setError(null);
     setSavedCount(null);
     try {
       const shots = await pickScreenshots();
       if (!shots.length) return;
-      const seen = new Set(rows.map((r) => (r.pick != null ? r.candidates[r.pick].google_place_id : r.name)));
-      const added: Row[] = [];
+      const seen = seenNow();
       for (let i = 0; i < shots.length; i++) {
         setProgress(`Reading screenshot ${i + 1} of ${shots.length}…`);
-        const r = await readScreenshot(shots[i].base64, near);
-        if (r.app) setApp(r.app);
-        for (const p of r.places) {
-          const key = p.candidates[0]?.google_place_id ?? p.name;
-          if (seen.has(key)) continue; // the same place on two overlapping screenshots
-          seen.add(key);
-          added.push({ name: p.name, note: p.note, candidates: p.candidates, pick: p.candidates.length ? 0 : null });
-        }
-        setRows((old) => [...old, ...added.splice(0)]);
+        addFound(await readScreenshot(shots[i].base64, near), seen);
       }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setProgress(null);
+    }
+  }
+
+  async function fromText() {
+    setError(null);
+    setSavedCount(null);
+    setProgress('Reading your list…');
+    try {
+      addFound(await readListText(pasted, near), seenNow());
+      setPasted('');
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -103,12 +126,12 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
       try {
         const c = r.candidates[r.pick];
         const res = await saveCapture(
-          { type: 'photo', text: app ? `(screenshot from ${app})` : '(screenshot)' },
+          { type: 'photo', text: app ? `(imported list from ${app})` : '(imported list)' },
           { name: r.name, location_hint: '', note: r.note ? `${app ?? 'Imported'}: ${r.note}` : '', dishes: [], candidates: [] },
           c,
           { type: 'app', name: app, url: null },
           list,
-          'screenshot',
+          tab === 'text' ? 'list_text' : 'screenshot',
         );
         next[i] = { ...r, status: res.saved ? 'Saved' : `Already on ${res.alreadyOn}` };
         if (res.saved) n += 1;
@@ -143,9 +166,9 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
           </Pressable>
         </View>
         <View style={styles.tabs}>
-          {(['maps', 'shots'] as Tab[]).map((t) => (
+          {(['maps', 'shots', 'text'] as Tab[]).map((t) => (
             <Pressable key={t} style={[styles.tab, tab === t && styles.tabOn]} onPress={() => setTab(t)}>
-              <Text style={[styles.tabText, tab === t && styles.tabTextOn]}>{t === 'maps' ? 'Google Maps' : 'Screenshots'}</Text>
+              <Text style={[styles.tabText, tab === t && styles.tabTextOn]}>{TAB_LABEL[t]}</Text>
             </Pressable>
           ))}
         </View>
@@ -177,12 +200,31 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
           </ScrollView>
         )}
 
-        {tab === 'shots' && (
-          <ScrollView contentContainerStyle={styles.body}>
-            <Text style={styles.p}>For lists in apps without an export, like Beli, Yelp collections or a notes list: take screenshots of the list, then choose them here (up to 10 at a time).</Text>
-            <Pressable style={[styles.primary, !!progress && styles.off]} onPress={screenshots} disabled={!!progress}>
-              {progress ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{rows.length ? 'Add more screenshots' : 'Choose screenshots'}</Text>}
-            </Pressable>
+        {tab !== 'maps' && (
+          <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
+            {tab === 'shots' ? (
+              <>
+                <Text style={styles.p}>For lists in apps without an export, like Beli or Yelp collections: take screenshots of the list, then choose them here (up to 10 at a time).</Text>
+                <Pressable style={[styles.primary, !!progress && styles.off]} onPress={screenshots} disabled={!!progress}>
+                  {progress ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{rows.length ? 'Add more screenshots' : 'Choose screenshots'}</Text>}
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Text style={styles.p}>Paste a list of places: from a notes app, a message, a spreadsheet. One per line or any format.</Text>
+                <TextInput
+                  style={styles.input}
+                  value={pasted}
+                  onChangeText={setPasted}
+                  multiline
+                  placeholder={'Nopa\nDelfina (Mission)\nTacos el Gordo, Las Vegas'}
+                  placeholderTextColor={colors.muted}
+                />
+                <Pressable style={[styles.primary, (!!progress || !pasted.trim()) && styles.off]} onPress={fromText} disabled={!!progress || !pasted.trim()}>
+                  {progress ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Find these places</Text>}
+                </Pressable>
+              </>
+            )}
             {!!progress && <Text style={styles.muted}>{progress}</Text>}
             {rows.length > 0 && (
               <>
@@ -227,7 +269,7 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
           </ScrollView>
         )}
 
-        {tab === 'shots' && (toSave > 0 || savedCount != null) && (
+        {tab !== 'maps' && (toSave > 0 || savedCount != null) && (
           <View style={styles.footer}>
             {savedCount != null && <Text style={styles.muted}>Saved {savedCount}.</Text>}
             {toSave > 0 && (
@@ -258,6 +300,10 @@ const styles = StyleSheet.create({
   link: { fontSize: 15, fontWeight: '700', color: colors.accent },
   muted: { fontSize: 14, color: colors.muted, fontWeight: '400' },
   error: { color: colors.danger, fontSize: 15, paddingHorizontal: 16 },
+  input: {
+    minHeight: 140, maxHeight: 260, borderWidth: 1, borderColor: colors.line, borderRadius: 12, padding: 12, fontSize: 16,
+    color: colors.text, backgroundColor: '#fff', textAlignVertical: 'top',
+  },
   primary: { backgroundColor: colors.accent, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
   primaryText: { color: '#fff', fontSize: 16, fontWeight: '700' },
   off: { opacity: 0.5 },

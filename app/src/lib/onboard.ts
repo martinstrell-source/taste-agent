@@ -67,6 +67,10 @@ export async function pickScreenshots(): Promise<{ uri: string; base64: string }
 export const readScreenshot = (base64: string, near: { lat: number; lng: number } | null) =>
   call<ShotResult>({ type: 'screenshot_list', image_base64: base64, ...(near ?? {}) });
 
+// a pasted list (notes app, a message, a spreadsheet column): same result as a screenshot
+export const readListText = (text: string, near: { lat: number; lng: number } | null) =>
+  call<ShotResult>({ type: 'screenshot_list', text, ...(near ?? {}) });
+
 // ---------- Google Maps Takeout ----------
 
 // pick the Takeout zip (or a CSV), upload it to the private imports bucket, and queue it for the import worker
