@@ -665,6 +665,16 @@ export default function Nearby() {
                 {!!g.detail && <Text style={styles.suggestDetail}>{g.detail}</Text>}
               </Pressable>
             ))}
+          {suggestions.length > 0 && (savedHits.length > 0 || googleHits.length > 0) && <Text style={styles.suggestHead}>Cities and neighborhoods</Text>}
+          {suggestions.map((sg) => (
+            <Pressable
+              key={sg.key}
+              onPress={() => choose(sg)}
+              style={({ pressed }) => [styles.suggestRow, pressed && { backgroundColor: colors.line }]}>
+              <Text style={styles.suggestName}>{sg.label}</Text>
+              {!!sg.detail && <Text style={styles.suggestDetail}>{sg.detail}</Text>}
+            </Pressable>
+          ))}
           {googleHits.some((g) => g.landmark) && <Text style={styles.suggestHead}>Go to</Text>}
           {googleHits
             .filter((g) => g.landmark)
@@ -677,16 +687,6 @@ export default function Nearby() {
                 {!!g.detail && <Text style={styles.suggestDetail}>{g.detail}</Text>}
               </Pressable>
             ))}
-          {suggestions.length > 0 && (savedHits.length > 0 || googleHits.length > 0) && <Text style={styles.suggestHead}>Places</Text>}
-          {suggestions.map((sg) => (
-            <Pressable
-              key={sg.key}
-              onPress={() => choose(sg)}
-              style={({ pressed }) => [styles.suggestRow, pressed && { backgroundColor: colors.line }]}>
-              <Text style={styles.suggestName}>{sg.label}</Text>
-              {!!sg.detail && <Text style={styles.suggestDetail}>{sg.detail}</Text>}
-            </Pressable>
-          ))}
           {suggestions.length > 0 && <Text style={styles.osm}>Places © OpenStreetMap contributors</Text>}
         </ScrollView>
       )}
