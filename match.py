@@ -203,6 +203,25 @@ def neighborhood(address):
     return parts[1] if len(parts) >= 3 else (parts[0] if parts else "")
 
 
+MIN_POOL = 300  # places in the shared pool before its measured base rates are trusted
+
+
+def load_base(con):
+    """How common each cuisine is among Bay Area food places (the cuisine_base view), as a share of
+    cuisine-tagged places to match how this file measures the user; the fixed BASE_CUISINE guesses
+    fill gaps and stand in until the pool is big enough."""
+    base = dict(BASE_CUISINE)
+    try:
+        rows = con.execute("SELECT cuisine, places, pool_size FROM cuisine_base").fetchall()
+    except Exception:  # noqa: BLE001  (view not created yet)
+        con.rollback()
+        return base
+    if rows and rows[0][2] >= MIN_POOL:
+        tagged = sum(r[1] for r in rows) or 1
+        base.update({c: n / tagged for c, n, _ in rows})
+    return base
+
+
 def rank_places(con, user, prof):
     """Score every usable candidate for this user. Returns a list sorted best first."""
     user_id, uid = user["user_id"], user["uid"]
@@ -215,7 +234,8 @@ def rank_places(con, user, prof):
     if not cuisine_share and not format_share:
         raise SystemExit(f"Profile for {user_id} is empty. Run enrich.py and profile.py for this user first.")
     c_max, f_max = max(cuisine_share.values(), default=1.0), max(format_share.values(), default=1.0)
-    known = set(cuisine_share) | set(BASE_CUISINE)
+    base_cuisine = load_base(con)
+    known = set(cuisine_share) | set(base_cuisine)
     my_dishes = list(prof["dishes"].keys())
     my_dish_tokens = [tokens(d) for d in my_dishes]
     trust = {s["name"]: s["trust"] for s in prof["sources"]}
@@ -271,7 +291,7 @@ def rank_places(con, user, prof):
         for (_, gname, addr, lat, lng, cats, cuisine, dishes_j, mtype, source, says, ititle,
              ilink, maps_uri, tone, hint) in mentions:
             formats, cuisines = place_features(cats, cuisine, gname, known)
-            c_scores = {c: lift_score(cuisine_share.get(c, 0), BASE_CUISINE.get(c, 0.02), c_max) for c in cuisines}
+            c_scores = {c: lift_score(cuisine_share.get(c, 0), max(0.002, base_cuisine.get(c, 0.02)), c_max) for c in cuisines}
             f_scores = {f: lift_score(format_share.get(f, 0), BASE_FORMAT.get(f, 0.05), f_max) for f in formats}
             dishes = json.loads(dishes_j or "[]")
             d_best, d_match = 0.0, None

@@ -63,6 +63,7 @@ export type DiscoverDeps = {
   saveAreaProfile: (cityKey: string, areaName: string, p: AreaProfile) => Promise<void>;
   claudeText: (prompt: string) => Promise<string>; // no web search: fast
   dislikes?: () => Promise<string[]>; // what this user said no to, in their words ("Golden Dragon: looks American Chinese")
+  taste?: () => Promise<string>; // a few lines on the user's taste for the rerank (cuisines, dishes, places they love)
 };
 
 export type Box = { low: { latitude: number; longitude: number }; high: { latitude: number; longitude: number } };
@@ -80,53 +81,110 @@ const FOOD = /restaurant|food|cafe|coffee|bakery|bar|pub|brewery|winery|meal_|ic
 
 // ---------- what the user said no to ----------
 
-// one fast Claude check on new picks: chains (regional ones the name list misses, like Round Table)
-// and, when the user has said why they turned places down, places like those
-export function screenPrompt(dislikes: string[], places: { id: string; name: string; detail: string }[]): string {
-  const noes = dislikes.length
-    ? `\nWhen they turned suggestions down, they said:\n${dislikes.map((d) => `- ${d}`).join('\n')}\n`
-    : '';
-  return `An app suggests restaurants, cafes and bars to someone who likes independent places.${noes}
-New suggestions (name, then what Google or an article says about it):
+// ---------- the rerank: one Claude call reads the user's taste and every place Discover found ----------
+// It scores each place for this person with a specific reason, flags chains (regional ones the name list
+// misses, like Round Table) and, when the user has said why they turned places down, places like those.
+// If the call fails, Discover keeps its own ranking.
+
+export type RerankItem = { id: string; name: string; detail: string; score: number; reason: string };
+
+export function rerankPrompt(taste: string, dislikes: string[], places: RerankItem[]): string {
+  const noes = dislikes.length ? `\nWhen they turned suggestions down, they said:\n${dislikes.map((d) => `- ${d}`).join('\n')}\n` : '';
+  return `An app suggests restaurants, cafes and bars to one person. What it knows about their taste:
+${taste || '(not much yet)'}
+${noes}
+Places found near where they are looking (name, then what Google or an article says about it):
 ${places.map((p, i) => `${i + 1}. ${p.name}${p.detail ? ` (${p.detail})` : ''}`).join('\n')}
 
-Flag:
-- chains: a business with many locations under the same name across a region or the country (Round Table Pizza,
-  Peet's Coffee, Panera). A local business with a few locations in one city is not a chain.${dislikes.length ? `
-- places they would most likely turn down for the reasons they gave. Only when the name or details make it clear
+For every place:
+- "fit": 0-100, how likely this person is to want to try it, from their taste (not just popularity).
+- "why": one short reason for this person, specific where you can ("Hand-pulled noodles, like Xi'an Famous you
+  saved"). Plain words, under 12 words, no flattery. Don't claim they've been anywhere.
+- "chain": true for a business with many locations under the same name across a region or the country
+  (Round Table Pizza, Peet's Coffee, Panera). A local business with a few locations in one city is not a chain.${dislikes.length ? `
+- "no": true only when the name or details make it clear they'd turn it down for the reasons they gave
   (a reason like "too far" or "too pricey" for one place says little about others).` : ''}
-Most should stay. Answer with only a JSON array: [{"n": <number>, "chain": true or false, "why": "a few words"}]. Use [] if none.`;
+Answer with only a JSON array, one object per place: [{"n": 1, "fit": 72, "why": "...", "chain": false${dislikes.length ? ', "no": false' : ''}}]`;
 }
 
-// ids to leave out, with the reason, recorded in the trace
-export async function screenPlaces(
-  places: { id: string; name: string; detail: string }[],
-  deps: DiscoverDeps,
-  trace: Trace,
-): Promise<Set<string>> {
-  const out = new Set<string>();
-  if (!places.length) return out;
-  const dislikes = (await deps.dislikes?.().catch(() => [])) ?? [];
-  const list = places.slice(0, 60);
-  const answer = await deps.claudeText(screenPrompt(dislikes, list)).catch(() => '');
-  const chains: string[] = [];
-  const noes: { name: string; why: string }[] = [];
+export async function rerank(items: RerankItem[], deps: DiscoverDeps, trace: Trace): Promise<Score[]> {
+  const keep = (xs: RerankItem[]) => xs.map((x) => ({ google_place_id: x.id, score: x.score, reason: x.reason }));
+  if (!items.length) return [];
+  const list = items.slice(0, 60);
+  const [taste, dislikes] = await Promise.all([
+    deps.taste?.().catch(() => '') ?? Promise.resolve(''),
+    deps.dislikes?.().catch(() => [] as string[]) ?? Promise.resolve([] as string[]),
+  ]);
+  const answer = await deps.claudeText(rerankPrompt(taste, dislikes, list)).catch(() => '');
+  let parsed: { n?: unknown; fit?: unknown; why?: unknown; chain?: unknown; no?: unknown }[];
   try {
     const m = answer.match(/\[[\s\S]*\]/);
-    for (const x of JSON.parse(m ? m[0] : '[]')) {
-      const p = list[Number(x?.n) - 1];
-      if (!p || out.has(p.id)) continue;
-      if (x?.chain !== true && !dislikes.length) continue; // no reasons given: only chains can be flagged
-      out.add(p.id);
-      if (x?.chain === true) chains.push(p.name);
-      else noes.push({ name: p.name, why: String(x?.why ?? '') });
-    }
+    parsed = JSON.parse(m ? m[0] : 'null');
+    if (!Array.isArray(parsed)) throw new Error('no list');
   } catch {
-    // unreadable answer: keep everything
+    trace.rerank = 'could not read the answer; kept Discover\'s own ranking';
+    return keep(items);
   }
+  const byN = new Map(parsed.map((x) => [Number(x?.n), x]));
+  const chains: string[] = [];
+  const noes: { name: string; why: string }[] = [];
+  const tr: { name: string; fit: number | null; why: string; score: number }[] = [];
+  const out: Score[] = [];
+  list.forEach((p, i) => {
+    const x = byN.get(i + 1);
+    if (x?.chain === true) return void chains.push(p.name);
+    if (dislikes.length && x?.no === true) return void noes.push({ name: p.name, why: String(x?.why ?? '') });
+    const fit = typeof x?.fit === 'number' ? Math.max(0, Math.min(100, x.fit)) : null;
+    const why = String(x?.why ?? '').trim().slice(0, 140);
+    // Discover's own score still counts (local specialties, quality); the fit for this person counts more.
+    // A city's institutions keep their label ("A Boston institution: ...").
+    const score = fit === null ? p.score : Math.round((0.3 * p.score + 0.7 * (fit / 100)) * 1000) / 1000;
+    const reason = /institution/i.test(p.reason) || !why ? p.reason : why;
+    out.push({ google_place_id: p.id, score, reason });
+    tr.push({ name: p.name, fit, why, score });
+  });
+  out.push(...keep(items.slice(60)));
   trace.chains_left_out = chains;
   if (dislikes.length) trace.your_noes = { said: dislikes, left_out: noes };
+  trace.rerank = tr.sort((a, b) => b.score - a.score);
   return out;
+}
+
+// ---------- which of the user's cuisines say the most about them ----------
+
+// fallback base rates (as in match.py), used until the shared pool is big enough to measure them
+export const BASE_CUISINE: Record<string, number> = {
+  american: 0.15, chinese: 0.10, mexican: 0.10, italian: 0.07, japanese: 0.07, pizza: 0.06, burgers: 0.04,
+  thai: 0.04, indian: 0.04, vietnamese: 0.04, korean: 0.03, mediterranean: 0.03, seafood: 0.03, french: 0.02,
+  bbq: 0.02, middle_eastern: 0.02, californian: 0.03, 'uyghur/central_asian': 0.002,
+};
+export const MIN_POOL = 300; // places in the pool before its base rates are trusted
+
+// as match.py's lift_score: half how much more often than a typical diner (full at 8x), half plain volume
+export function liftScore(share: number, base: number, maxShare: number, cap = 8): number {
+  if (share <= 0) return 0;
+  const lift = share / base;
+  const distinct = lift > 1 ? Math.max(0, Math.min(1, Math.log(lift) / Math.log(cap))) : 0;
+  return 0.5 * distinct + 0.5 * Math.min(1, share / maxShare);
+}
+
+// the user's cuisines, most telling first: saving a lot of Mexican in the Bay Area says less than saving Burmese
+export function rankCuisines(
+  profile: Record<string, { share?: number; count?: number }>,
+  measured: { cuisine: string; share: number }[],
+  poolSize: number,
+): { cuisine: string; score: number; share: number; base: number }[] {
+  const base: Record<string, number> = { ...BASE_CUISINE };
+  if (poolSize >= MIN_POOL) for (const m of measured) base[m.cuisine] = m.share;
+  const entries = Object.entries(profile).map(([c, v]) => [c, v?.share ?? 0] as const);
+  const max = Math.max(0, ...entries.map(([, s]) => s)) || 1;
+  return entries
+    .map(([c, s], i) => {
+      const b = Math.max(0.002, base[c] ?? 0.01);
+      return { cuisine: c, share: s, base: b, score: liftScore(s, b, max), i };
+    })
+    .sort((a, b) => b.score - a.score || a.i - b.i)
+    .map(({ i: _i, ...r }) => r);
 }
 
 // about 5 km cells: everyone near the same spot shares one cache entry
@@ -442,7 +500,8 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
         kept.push(`${label} (${Math.round(score * 100)})`);
         if (!info.has(id)) {
           const types = ((g.types as string[] | undefined) ?? []).filter((t) => !/^(point_of_interest|establishment|food|restaurant)$/.test(t)).slice(0, 3);
-          info.set(id, { id, name: label, detail: [Q.cuisine, ...types.map((t) => t.replace(/_/g, ' '))].filter(Boolean).join('; ') });
+          const stars = g.rating ? `${g.rating} stars, ${g.userRatingCount ?? 0} Google reviews` : '';
+          info.set(id, { id, name: label, detail: [Q.cuisine, ...types.map((t) => t.replace(/_/g, ' ')), stars].filter(Boolean).join('; ') });
         }
         const prev = scores.get(id);
         if (!prev || score > prev.score) scores.set(id, { google_place_id: id, score: Math.round(score * 1000) / 1000, reason });
@@ -465,8 +524,12 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
     }
   }
 
-  const no = await screenPlaces([...info.values()].filter((p) => scores.has(p.id)), deps, trace);
-  await deps.save(items, rows, [...scores.values()].filter((x) => !no.has(x.google_place_id)), key, 'google');
+  const ranked = await rerank(
+    [...scores.values()].map((x) => ({ id: x.google_place_id, name: info.get(x.google_place_id)?.name ?? '', detail: info.get(x.google_place_id)?.detail ?? '', score: x.score, reason: x.reason })),
+    deps,
+    trace,
+  );
+  await deps.save(items, rows, ranked, key, 'google');
   trace.kind = 'google';
   trace.result = { searched, reused: queries.length - searched, places: scores.size };
   return { mode: 'google', area: key, away: !!away, searched, places: scores.size };
@@ -547,10 +610,7 @@ export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps, trac
     // the web was searched for this area recently (by anyone): reuse, and score for this user
     const prev = await deps.existingForArea(key, `here:${key}:w:`);
     const fresh = prev.filter((p) => !known.has(p.google_place_id) && !isChain(p.name ?? ''));
-    const no = await screenPlaces(fresh.map((p) => ({ id: p.google_place_id, name: p.name ?? '', detail: p.cuisine ?? '' })), deps, trace);
-    const scores = fresh
-      .filter((p) => !no.has(p.google_place_id))
-      .map((p) => ({ google_place_id: p.google_place_id, score: 0.55, reason: `From ${p.source}` }));
+    const scores = await rerank(fresh.map((p) => ({ id: p.google_place_id, name: p.name ?? '', detail: [p.cuisine, `from ${p.source}`].filter(Boolean).join('; '), score: 0.55, reason: `From ${p.source}` })), deps, trace);
     await deps.save([], [], scores, key, 'web-cached');
     trace.kind = 'web-cached';
     trace.result = { reused_from_last_30_days: true, places: scores.length };
@@ -575,6 +635,7 @@ export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps, trac
   const items: { item_id: string; source: string; title: string; link: string | null }[] = [];
   const rows: CandidateRow[] = [];
   const scores: Score[] = [];
+  const webInfo = new Map<string, { name: string; detail: string }>(); // for the rerank
   await Promise.all(
     found.map(async (f, i) => {
       const t = { name: f.name, source: f.source, url: f.source_url, result: '' };
@@ -607,11 +668,13 @@ export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps, trac
         : liked && !away ? `${cap(f.cuisine)}: one of the cuisines you save most. From ${f.source}`
         : `From ${f.source}`;
       scores.push({ google_place_id: row.google_place_id, score: Math.round(score * 1000) / 1000, reason });
+      webInfo.set(row.google_place_id, { name: f.name, detail: [f.cuisine, f.why, `from ${f.source}`].filter(Boolean).join('; ') });
       t.result = `kept (${Math.round(score * 100)}): ${reason}`;
     }),
   );
   if (!items.length) items.push({ item_id: `here:${key}:w:none`, source: 'Web', title: 'No web results', link: null });
-  await deps.save(items, rows, scores, key, 'web');
+  const ranked = await rerank(scores.map((x) => ({ id: x.google_place_id, name: webInfo.get(x.google_place_id)?.name ?? '', detail: webInfo.get(x.google_place_id)?.detail ?? '', score: x.score, reason: x.reason })), deps, trace);
+  await deps.save(items, rows, ranked, key, 'web');
   trace.result = { searches, found: found.length, places: scores.length };
   return { mode: 'web', area: key, searches, places: scores.length };
 }

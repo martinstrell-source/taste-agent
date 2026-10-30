@@ -260,7 +260,7 @@ Deno.test('noes: places like ones the user turned down are left out, with the re
   let asked = '';
   const { d, saved } = deps({
     dislikes: async () => ['Golden Dragon: looks American Chinese'],
-    claudeText: async (p) => ((asked = p), 'Sure: [{"n": 2, "why": "like Golden Dragon"}]'),
+    claudeText: async (p) => ((asked = p), 'Sure: [{"n": 2, "why": "like Golden Dragon", "no": true}]'),
   });
   const trace: Record<string, unknown> = {};
   await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, d, trace);
@@ -280,7 +280,7 @@ Deno.test('screen: with no reasons given, Claude still flags chains (and only ch
   const a = deps({ claudeText: async (p) => ((asked = p), '[{"n": 1, "chain": true, "why": "regional chain"}, {"n": 2, "chain": false, "why": "meh"}]') });
   const trace: Record<string, unknown> = {};
   await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, a.d, trace);
-  ok(asked.includes('chains') && !asked.includes('turned suggestions down'));
+  ok(asked.includes('"chain"') && !asked.includes('turned suggestions down') && !asked.includes('"no"'));
   const first = asked.split('\n').find((l) => l.startsWith('1. '))!.slice(3).split(' (')[0];
   eq(trace.chains_left_out, [first]);
   const base = deps();
@@ -376,4 +376,41 @@ Deno.test('away: a cuisine saved at home gives at most 2 standouts, and the web 
 Deno.test('chains: regional chains are on the name list', () => {
   ok(isChain('Round Table Pizza') && isChain("Peet's Coffee") && isChain('Mountain Mike’s Pizza') && isChain('In-N-Out Burger'));
   ok(!isChain('Round the Corner Cafe') && !isChain('Tartine'));
+});
+
+Deno.test('cuisines: ranked by how much more often you save them than is common, not raw count', async () => {
+  const { rankCuisines } = await import('./discover.ts');
+  const prof = { mexican: { share: 0.2 }, japanese: { share: 0.12 }, burmese: { share: 0.05 } };
+  // a big enough pool: measured base rates are used
+  const big = rankCuisines(prof, [{ cuisine: 'mexican', share: 0.18 }, { cuisine: 'japanese', share: 0.04 }, { cuisine: 'burmese', share: 0.004 }], 2000);
+  eq(big.map((r) => r.cuisine), ['burmese', 'japanese', 'mexican']);
+  // a small pool: the built-in base rates (Mexican 10%) are used instead of the measured ones
+  const small = rankCuisines(prof, [{ cuisine: 'mexican', share: 0.5 }], 20);
+  eq(small.find((r) => r.cuisine === 'mexican')?.base, 0.1);
+  eq(rankCuisines({}, [], 0), []);
+});
+
+Deno.test('rerank: Claude scores each place for this person with a specific reason; institutions keep theirs; a failed call keeps the ranking', async () => {
+  const { rerank } = await import('./discover.ts');
+  const items = [
+    { id: 'A', name: 'Noodle Bar', detail: 'chinese', score: 0.5, reason: 'Chinese: one of the cuisines you save most' },
+    { id: 'B', name: 'Old Oyster House', detail: 'seafood', score: 0.95, reason: 'A Boston institution: oysters since 1826' },
+    { id: 'C', name: 'Plain Grill', detail: 'american', score: 0.8, reason: 'Well rated near you' },
+  ];
+  let asked = '';
+  const d = deps({
+    taste: async () => 'Top cuisines: chinese, burmese\nFavorites include: Xi\'an Famous',
+    claudeText: async (p) => ((asked = p), '[{"n":1,"fit":90,"why":"Hand-pulled noodles, like Xi\'an Famous you saved"},{"n":2,"fit":60,"why":"Classic oysters"},{"n":3,"fit":10,"why":"Generic grill"}]'),
+  }).d;
+  const trace: Record<string, unknown> = {};
+  const out = Object.fromEntries((await rerank(items, d, trace)).map((x) => [x.google_place_id, x]));
+  ok(asked.includes("Favorites include: Xi'an Famous") && asked.includes('3. Plain Grill (american)'));
+  eq(out.A.reason, "Hand-pulled noodles, like Xi'an Famous you saved");
+  eq(out.A.score, 0.78); // 0.3 * 0.5 + 0.7 * 0.9
+  eq(out.B.reason, 'A Boston institution: oysters since 1826');
+  ok(out.A.score > out.C.score); // Discover had Plain Grill higher; the fit for this person wins
+  eq((trace.rerank as { name: string }[])[0].name, 'Noodle Bar'); // 0.78 vs 0.705 for the oyster house
+
+  const failed = await rerank(items, deps({ claudeText: async () => 'sorry' }).d, {});
+  eq(failed.map((x) => [x.google_place_id, x.score, x.reason]), items.map((x) => [x.id, x.score, x.reason]));
 });

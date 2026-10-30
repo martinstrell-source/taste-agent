@@ -542,20 +542,25 @@ export default function Nearby() {
     await u.run();
     setReload((n) => n + 1);
   }
-  // hide every current suggestion, everywhere (not a "no": taste is unaffected; Discover can find them again)
+  // clear the suggestions showing in the list (this area, the lists and filters on). Not a "no": taste is
+  // unaffected, and Discover or the news can suggest one again later
+  const shownPicks = shown.filter((p) => p.kind === 'pick' && !p.from_search);
   function clearSuggestions() {
+    const n = shownPicks.length;
+    if (!n) return;
     Alert.alert(
-      'Clear all suggestions?',
-      "This removes every suggestion from your list, everywhere, not just here. Your saved places stay. It doesn't count as \"Not for me\": Discover and the weekly news can suggest a place again later.",
+      `Clear ${n} suggestion${n === 1 ? '' : 's'}?`,
+      `This removes the ${n === 1 ? 'suggestion' : `${n} suggestions`} showing in your list now. Suggestions in other areas or hidden by your filters stay. It doesn't count as "Not for me": Discover and the weekly news can suggest a place again later.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Clear all',
+          text: 'Clear',
           style: 'destructive',
           onPress: async () => {
-            const { error } = await supabase.rpc('clear_suggestions');
+            const ids = shownPicks.map((p) => p.google_place_id ?? p.ref);
+            const { error } = await supabase.rpc('clear_suggestions', { ids });
             if (error) setError(/clear_suggestions/.test(error.message) ? 'This needs the latest database update (run deploy.sh).' : error.message);
-            else setReload((n) => n + 1);
+            else setReload((n2) => n2 + 1);
           },
         },
       ],
@@ -903,7 +908,9 @@ export default function Nearby() {
             <View style={styles.footer}>
               <Button title="Import places" icon="square.and.arrow.down" kind="secondary" small onPress={() => setShowImport(true)} />
               <Button title="Hidden places" icon="eye.slash" kind="secondary" small onPress={() => setShowHidden(true)} />
-              <Button title="Clear suggestions" icon="trash" kind="secondary" small onPress={clearSuggestions} />
+              {shownPicks.length > 0 && (
+                <Button title={`Clear ${shownPicks.length} suggestion${shownPicks.length === 1 ? '' : 's'}`} icon="trash" kind="secondary" small onPress={clearSuggestions} />
+              )}
               <Button title="Sign out" kind="secondary" small onPress={() => supabase.auth.signOut()} />
             </View>
           }
