@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { saveCapture, type Candidate } from '@/lib/capture';
+import { runCapture, saveCapture, type Candidate, type Source } from '@/lib/capture';
 import { getJob, latestTakeout, pickScreenshots, readListText, readScreenshot, startTakeoutImport, type ImportJob, type ShotResult } from '@/lib/onboard';
 import { colors } from '@/lib/theme';
 
@@ -13,13 +13,20 @@ type Props = {
   onSaved: () => void;
 };
 
-type Row = { name: string; note: string; candidates: Candidate[]; pick: number | null; status?: string };
-type Tab = 'maps' | 'shots' | 'text';
-const TAB_LABEL: Record<Tab, string> = { maps: 'Google Maps', shots: 'Screenshots', text: 'Text' };
+// source: where a row came from when it isn't the screenshot/list app (a link: the article's site)
+type Row = { name: string; note: string; candidates: Candidate[]; pick: number | null; status?: string; source?: Source; via?: string };
+type Tab = 'text' | 'shots' | 'link' | 'maps';
+const TABS: { key: Tab; label: string }[] = [
+  { key: 'text', label: 'Text' },
+  { key: 'shots', label: 'Screenshot' },
+  { key: 'link', label: 'Link' },
+  { key: 'maps', label: 'Google Maps' },
+];
 
 export default function ImportPlaces({ visible, near, onClose, onSaved }: Props) {
   const insets = useSafeAreaInsets();
-  const [tab, setTab] = useState<Tab>('maps');
+  const [tab, setTab] = useState<Tab>('text');
+  const [link, setLink] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   // Google Maps (Takeout)
@@ -115,6 +122,31 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
     }
   }
 
+  // an article or a page of notes: every place on it, through the same reader as Add a place
+  async function fromLink() {
+    setError(null);
+    setSavedCount(null);
+    setProgress('Reading the page… this can take 10 to 20 seconds.');
+    try {
+      const r = await runCapture({ type: 'link', url: link.trim(), ...(near ?? {}) });
+      const seen = seenNow();
+      const added: Row[] = [];
+      for (const p of r.places) {
+        const key = p.candidates[0]?.google_place_id ?? p.name;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        added.push({ name: p.name, note: p.note, candidates: p.candidates, pick: p.candidates.length ? 0 : null, source: r.source, via: 'link' });
+      }
+      setRows((old) => [...old, ...added]);
+      if (!added.length) setError(r.message ?? 'No places found on that page.');
+      else setLink('');
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setProgress(null);
+    }
+  }
+
   async function saveAll() {
     setSaving(true);
     setError(null);
@@ -125,14 +157,16 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
       if (r.pick == null || r.status) continue;
       try {
         const c = r.candidates[r.pick];
-        const res = await saveCapture(
-          { type: 'photo', text: app ? `(imported list from ${app})` : '(imported list)' },
-          { name: r.name, location_hint: '', note: r.note ? `${app ?? 'Imported'}: ${r.note}` : '', dishes: [], candidates: [] },
-          c,
-          { type: 'app', name: app, url: null },
-          list,
-          tab === 'text' ? 'list_text' : 'screenshot',
-        );
+        const res = r.source
+          ? await saveCapture({ type: 'link', url: r.source.url ?? undefined }, { name: r.name, location_hint: '', note: r.note, dishes: [], candidates: [] }, c, r.source, list, 'import_link')
+          : await saveCapture(
+              { type: 'photo', text: app ? `(imported list from ${app})` : '(imported list)' },
+              { name: r.name, location_hint: '', note: r.note ? `${app ?? 'Imported'}: ${r.note}` : '', dishes: [], candidates: [] },
+              c,
+              { type: 'app', name: app, url: null },
+              list,
+              tab === 'text' ? 'list_text' : 'screenshot',
+            );
         next[i] = { ...r, status: res.saved ? 'Saved' : `Already on ${res.alreadyOn}` };
         if (res.saved) n += 1;
       } catch (e) {
@@ -166,9 +200,17 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
           </Pressable>
         </View>
         <View style={styles.tabs}>
-          {(['maps', 'shots', 'text'] as Tab[]).map((t) => (
-            <Pressable key={t} style={[styles.tab, tab === t && styles.tabOn]} onPress={() => setTab(t)}>
-              <Text style={[styles.tabText, tab === t && styles.tabTextOn]}>{TAB_LABEL[t]}</Text>
+          {TABS.map((t, i) => (
+            <Pressable
+              key={t.key}
+              style={({ pressed }) => [styles.tab, i > 0 && styles.tabDivider, tab === t.key && styles.tabOn, pressed && tab !== t.key && styles.tabPressed]}
+              onPress={() => {
+                setTab(t.key);
+                setError(null);
+              }}>
+              <Text style={[styles.tabText, tab === t.key && styles.tabTextOn]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
+                {t.label}
+              </Text>
             </Pressable>
           ))}
         </View>
@@ -202,7 +244,27 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
 
         {tab !== 'maps' && (
           <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled">
-            {tab === 'shots' ? (
+            {tab === 'link' ? (
+              <>
+                <Text style={styles.p}>An article or a page of notes that names several places, like a "best of" list. Every place on it shows up below for you to check.</Text>
+                <TextInput
+                  style={styles.linkInput}
+                  value={link}
+                  onChangeText={setLink}
+                  placeholder="Paste a link"
+                  placeholderTextColor={colors.muted}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="url"
+                />
+                <Pressable
+                  style={[styles.primary, (!!progress || !/^https?:\/\//i.test(link.trim())) && styles.off]}
+                  onPress={fromLink}
+                  disabled={!!progress || !/^https?:\/\//i.test(link.trim())}>
+                  {progress ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Find the places</Text>}
+                </Pressable>
+              </>
+            ) : tab === 'shots' ? (
               <>
                 <Text style={styles.p}>For lists in apps without an export, like Beli or Yelp collections: take screenshots of the list, then choose them here (up to 10 at a time).</Text>
                 <Pressable style={[styles.primary, !!progress && styles.off]} onPress={screenshots} disabled={!!progress}>
@@ -289,11 +351,21 @@ const styles = StyleSheet.create({
   head: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16 },
   title: { fontSize: 22, fontWeight: '800', color: colors.text },
   done: { fontSize: 17, fontWeight: '700', color: colors.accent },
-  tabs: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, paddingVertical: 12 },
-  tab: { flex: 1, borderWidth: 1, borderColor: colors.line, borderRadius: 18, paddingVertical: 8, alignItems: 'center', backgroundColor: '#fff' },
-  tabOn: { backgroundColor: colors.text, borderColor: colors.text },
-  tabText: { fontSize: 15, fontWeight: '600', color: colors.text },
+  // one segmented bar, like Add a place: the selected part dark, the rest white
+  tabs: {
+    flexDirection: 'row', marginHorizontal: 16, marginVertical: 12, backgroundColor: colors.card,
+    borderRadius: 10, borderWidth: 1, borderColor: colors.line, overflow: 'hidden',
+  },
+  tab: { flex: 1, paddingVertical: 10, paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
+  tabDivider: { borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.line },
+  tabOn: { backgroundColor: colors.text },
+  tabPressed: { backgroundColor: colors.line },
+  tabText: { fontSize: 14, fontWeight: '600', color: colors.text },
   tabTextOn: { color: '#fff' },
+  linkInput: {
+    borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 11, fontSize: 16,
+    color: colors.text, backgroundColor: '#fff',
+  },
   body: { paddingHorizontal: 16, gap: 10, paddingBottom: 24 },
   p: { fontSize: 15, lineHeight: 21, color: colors.text },
   step: { fontSize: 15, lineHeight: 21, color: colors.text },
