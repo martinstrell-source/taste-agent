@@ -46,7 +46,7 @@ export type WebResult = { text: string; searches: number; queries?: string[]; pa
 export type Specialty = { name: string; query: string; tags: string[] };
 export type Institution = { name: string; why: string };
 // size: major | mid | small; institutions: the places the city is known for (asked since Oct 30; older profiles are asked again once)
-export type AreaProfile = { size?: string; local: Specialty[]; strengths: Specialty[]; institutions?: Institution[]; area?: string };
+export type AreaProfile = { size?: string; local: Specialty[]; strengths: Specialty[]; institutions?: Institution[]; area?: string; city?: string };
 
 export type DiscoverDeps = {
   topCuisines: () => Promise<string[]>; // this user's, strongest first
@@ -95,7 +95,7 @@ const FOOD = /restaurant|food|cafe|coffee|bakery|bar|pub|brewery|winery|meal_|ic
 // ---------- the rerank: one Claude call reads the user's taste and every place Discover found ----------
 // It scores each place for this person with a specific reason, flags chains (regional ones the name list
 // misses, like Round Table) and, when the user has said why they turned places down, places like those.
-// If the call fails, Discover keeps its own ranking.
+// It runs in batches; a batch that fails keeps Discover's own reasons, on the same scale.
 
 export type RerankItem = { id: string; name: string; detail: string; score: number; reason: string };
 
@@ -111,7 +111,8 @@ For every place:
 - "fit": 0-100, how likely this person is to want to try it, from their taste (not just popularity).
 - "why": one short reason, written to them as "you", specific where you can ("Hand-pulled noodles, like Xi'an
   Famous you saved"). Never "they" or "the user". Plain words, under 12 words, no flattery. Don't claim they've
-  been anywhere.
+  been anywhere. Say what makes it worth trying; never say what it isn't ("not your usual cuisines"). If it's a
+  poor fit, give it a low fit and a short plain description.
 - "chain": true for a business with many locations under the same name across a region or the country
   (Round Table Pizza, Peet's Coffee, Panera). A local business with a few locations in one city is not a chain.${dislikes.length ? `
 - "no": true only when the name or details make it clear they'd turn it down for the reasons they gave
@@ -128,46 +129,63 @@ export function toYou(s: string): string {
     .replace(/^you/, 'You').replace(/^your/, 'Your');
 }
 
+export const RERANK_BATCH = 25; // places per Claude call: a long list in one call can come back cut off
+const MAX_RERANK = 150;
+
+type Verdict = { n?: unknown; fit?: unknown; why?: unknown; chain?: unknown; no?: unknown };
+
+async function rerankBatch(list: RerankItem[], taste: string, dislikes: string[], deps: DiscoverDeps): Promise<Map<number, Verdict> | null> {
+  const answer = await deps.claudeText(rerankPrompt(taste, dislikes, list)).catch(() => '');
+  try {
+    const m = answer.match(/\[[\s\S]*\]/);
+    const parsed = JSON.parse(m ? m[0] : 'null');
+    if (!Array.isArray(parsed)) return null;
+    return new Map((parsed as Verdict[]).map((x) => [Number(x?.n), x]));
+  } catch {
+    return null;
+  }
+}
+
 export async function rerank(items: RerankItem[], deps: DiscoverDeps, trace: Trace): Promise<Score[]> {
-  const keep = (xs: RerankItem[]) => xs.map((x) => ({ google_place_id: x.id, score: x.score, reason: x.reason }));
   if (!items.length) return [];
-  const list = items.slice(0, 60);
+  const list = items.slice(0, MAX_RERANK);
   const [taste, dislikes] = await Promise.all([
     deps.taste?.().catch(() => '') ?? Promise.resolve(''),
     deps.dislikes?.().catch(() => [] as string[]) ?? Promise.resolve([] as string[]),
   ]);
-  const answer = await deps.claudeText(rerankPrompt(taste, dislikes, list)).catch(() => '');
-  let parsed: { n?: unknown; fit?: unknown; why?: unknown; chain?: unknown; no?: unknown }[];
-  try {
-    const m = answer.match(/\[[\s\S]*\]/);
-    parsed = JSON.parse(m ? m[0] : 'null');
-    if (!Array.isArray(parsed)) throw new Error('no list');
-  } catch {
-    trace.rerank = 'could not read the answer; kept Discover\'s own ranking';
-    return keep(items);
-  }
-  const byN = new Map(parsed.map((x) => [Number(x?.n), x]));
+  // in batches, all at once: every place gets read, and one bad answer only affects its own batch
+  const batches: RerankItem[][] = [];
+  for (let i = 0; i < list.length; i += RERANK_BATCH) batches.push(list.slice(i, i + RERANK_BATCH));
+  const verdicts = await Promise.all(batches.map((b) => rerankBatch(b, taste, dislikes, deps)));
+  const failed = verdicts.filter((v) => v === null).length;
+
   const chains: string[] = [];
   const noes: { name: string; why: string }[] = [];
   const tr: { name: string; fit: number | null; why: string; score: number }[] = [];
   const out: Score[] = [];
-  list.forEach((p, i) => {
-    const x = byN.get(i + 1);
-    if (x?.chain === true) return void chains.push(p.name);
-    if (dislikes.length && x?.no === true) return void noes.push({ name: p.name, why: String(x?.why ?? '') });
-    const fit = typeof x?.fit === 'number' ? Math.max(0, Math.min(100, x.fit)) : null;
-    const why = toYou(String(x?.why ?? '').trim().slice(0, 140));
-    // Discover's own score still counts (local specialties, quality); the fit for this person counts more.
-    // A city's institutions keep their label ("A Boston institution: ...").
-    const score = fit === null ? p.score : Math.round((0.3 * p.score + 0.7 * (fit / 100)) * 1000) / 1000;
-    const reason = /institution/i.test(p.reason) || !why ? p.reason : why;
-    out.push({ google_place_id: p.id, score, reason });
-    tr.push({ name: p.name, fit, why, score });
+  // a place with no verdict (its batch failed) gets a middling fit, so it ranks on the same scale as the rest
+  const blend = (score: number, fit: number) => Math.round((0.3 * score + 0.7 * (fit / 100)) * 1000) / 1000;
+  batches.forEach((batch, b) => {
+    const byN = verdicts[b];
+    batch.forEach((p, i) => {
+      const x = byN?.get(i + 1);
+      if (x?.chain === true) return void chains.push(p.name);
+      if (dislikes.length && x?.no === true) return void noes.push({ name: p.name, why: String(x?.why ?? '') });
+      const fit = typeof x?.fit === 'number' ? Math.max(0, Math.min(100, x.fit)) : null;
+      const why = toYou(String(x?.why ?? '').trim().slice(0, 140));
+      // Discover's own score still counts (local specialties, quality); the fit for this person counts more.
+      // A city's institutions keep their label ("A Boston institution: ...").
+      const score = blend(p.score, fit ?? 50);
+      const reason = /institution/i.test(p.reason) || !why ? p.reason : why;
+      out.push({ google_place_id: p.id, score, reason });
+      tr.push({ name: p.name, fit, why, score });
+    });
   });
-  out.push(...keep(items.slice(60)));
+  out.push(...items.slice(MAX_RERANK).map((x) => ({ google_place_id: x.id, score: blend(x.score, 50), reason: x.reason })));
   trace.chains_left_out = chains;
   if (dislikes.length) trace.your_noes = { said: dislikes, left_out: noes };
-  trace.rerank = tr.sort((a, b) => b.score - a.score);
+  trace.rerank_batches = { batches: batches.length, failed };
+  trace.rerank = failed === batches.length ? "could not read the answers; kept Discover's own ranking" : tr.sort((a, b) => b.score - a.score);
   return out;
 }
 
@@ -273,11 +291,13 @@ export function areaPrompt(area: string): string {
    Leave it empty if nothing stands out. Do not list a category just because it is popular.
 3. Size: "major" for a big city with a deep food scene (Beijing, Tokyo, New York), "mid" for a regional city,
    "small" for a town or small city.
-4. Up to 8 institutions: restaurants, bakeries, cafes or bars this place is famous for that locals and local food
+4. "city": the plain name of the city or town people would use (for a neighborhood like the Lower East Side,
+   "New York"; for "Rapid City, SD", "Rapid City").
+5. Up to 8 institutions: restaurants, bakeries, cafes or bars this place is famous for that locals and local food
    writers still consider essential (for New York: Katz's Delicatessen, Russ & Daughters). Skip tourist traps locals
    avoid and chains. Only places you are confident are still open. For a small town, list fewer or none.
 Return only JSON, no other text:
-{"size": "major", "local": [{"name": "Peking roast duck", "query": "peking roast duck restaurant", "tags": ["peking duck", "roast duck", "beijing", "chinese"]}],
+{"city": "Beijing", "size": "major", "local": [{"name": "Peking roast duck", "query": "peking roast duck restaurant", "tags": ["peking duck", "roast duck", "beijing", "chinese"]}],
  "strengths": [{"name": "...", "query": "...", "tags": ["..."]}],
  "institutions": [{"name": "Siji Minfu", "why": "a few words on what it is known for"}]}
 "query" is a short Google Maps search in English. "tags" are lowercase cuisine words a food app might use for these
@@ -304,7 +324,8 @@ export function parseAreaProfile(text: string): AreaProfile | null {
       .filter((x: { name?: unknown }) => typeof x?.name === 'string' && x.name.trim())
       .slice(0, 8)
       .map((x: { name: string; why?: unknown }) => ({ name: x.name.trim(), why: String(x.why ?? '').trim().slice(0, 160) }));
-    const p = { size, local: list(d.local, 6), strengths: list(d.strengths, 3), institutions };
+    const city = typeof d.city === 'string' && d.city.trim() ? d.city.trim().slice(0, 60) : undefined;
+    const p = { size, local: list(d.local, 6), strengths: list(d.strengths, 3), institutions, city };
     return p.local.length ? p : null;
   } catch {
     return null;
@@ -330,14 +351,14 @@ export async function awayProfile(input: DiscoverInput, deps: DiscoverDeps, trac
   trace.away = true;
   const ck = cityKey(input.lat, input.lng);
   const have = await deps.getAreaProfile(ck);
-  if (have?.size && Array.isArray(have.institutions)) { // profiles saved before size or institutions were asked get asked again once
+  if (have?.size && Array.isArray(have.institutions) && have.city) { // profiles saved before size, institutions or city were asked get asked again once
     trace.city_profile = { city_key: ck, from: 'saved', ...have };
     return have;
   }
   const area = input.area_name || `the area around ${input.lat.toFixed(2)}, ${input.lng.toFixed(2)}`;
   const answer = await deps.claudeText(areaPrompt(area)).catch((e) => `error: ${(e as Error).message}`);
   const p = parseAreaProfile(answer);
-  if (p) p.area = area;
+  if (p) p.area = p.city ?? area; // "New York", not "Lower East Side, New York"
   trace.city_profile = p ? { city_key: ck, from: 'asked Claude', ...p } : { city_key: ck, from: 'asked Claude, could not read the answer', answer: answer.slice(0, 2000) };
   if (p) await deps.saveAreaProfile(ck, area, p).catch(() => {});
   return p;
@@ -471,8 +492,8 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
     const other = all.slice(0, 5).find((c) => !yoursLocal.includes(c));
     queries = [
       ...away.local.slice(0, 5).map((sp, i) => ({ c: `local-${slug(sp.name)}`, q: sp.query, label: `${sp.name} in ${here}`, cuisine: sp.name.toLowerCase(), base: 1 - i / 12, strict: false, local: true, reason: `Local specialty: ${sp.name}` })),
-      ...yoursLocal.map((c) => ({ c, q: `${nice(c)} restaurant`, label: `${nice(c)} near ${here}`, cuisine: c, base: 1, strict: false, reason: `${cap(nice(c))}: you save a lot of it, and ${input.area_name ?? 'this area'} does it especially well` })),
-      ...away.strengths.slice(0, 2).map((sp) => ({ c: `strength-${slug(sp.name)}`, q: sp.query, label: `${sp.name} in ${here}`, cuisine: sp.name.toLowerCase(), base: 0.8, strict: false, reason: `${sp.name}: something ${input.area_name ?? 'this area'} does especially well` })),
+      ...yoursLocal.map((c) => ({ c, q: `${nice(c)} restaurant`, label: `${nice(c)} near ${here}`, cuisine: c, base: 1, strict: false, reason: `${cap(nice(c))}: you save a lot of it, and ${away.area ?? input.area_name ?? 'this area'} does it especially well` })),
+      ...away.strengths.slice(0, 2).map((sp) => ({ c: `strength-${slug(sp.name)}`, q: sp.query, label: `${sp.name} in ${here}`, cuisine: sp.name.toLowerCase(), base: 0.8, strict: false, reason: `${sp.name}: something ${away.area ?? input.area_name ?? 'this area'} does especially well` })),
       // a non-local standout only in a major food city; a 4.6 rating means little in a small market
       ...(other && away.size === 'major' ? [{ c: `${other}:standout`, q: `${nice(other)} restaurant`, label: `${nice(other)} near ${here}`, cuisine: other, base: 0.5, strict: true, cap: 2, reason: `${cap(nice(other))}: one of the cuisines you save most, and a standout here` }] : []),
     ];

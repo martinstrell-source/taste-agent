@@ -53,7 +53,8 @@ PLACES = [
     ("rapidcity", "Rapid City, SD", 44.0805, -103.2310, "small city: local specialties"),
 ]
 
-GENERIC = re.compile(r"^(well rated near you|from [^.;]+)\.?$", re.I)
+# reasons that don't come from the rerank: plain source names and Discover's own templates
+GENERIC = re.compile(r"^(well rated near you|from [^.;]+)\.?$|one of the cuisines you save most|you save a lot of it", re.I)
 WORDING = [
     (re.compile(r"\b(they|their|them|themselves)\b", re.I), 'says "they"'),
     (re.compile(r"\bthe user\b", re.I), 'says "the user"'),
@@ -159,17 +160,25 @@ def suggestions(con, uid, lat, lng, started):
                     "set_config('request.jwt.claims', %s, true)", (uid, json.dumps({"sub": uid, "role": "authenticated"})))
         rows = con.execute("""
             SELECT n.name, n.google_place_id, n.distance_m, n.categories, n.rating, n.review_count, n.score, n.why,
-                   n.place_lat, n.place_lng, c.primary_type, c.business_status,
+                   n.place_lat, n.place_lng, c.primary_type, c.business_status, c.source,
                    ps.updated_at >= %s AS this_run
             FROM public.nearby(%s, %s, %s, 300, null) n
-            LEFT JOIN LATERAL (SELECT primary_type, business_status FROM candidates
+            LEFT JOIN LATERAL (SELECT primary_type, business_status, source FROM candidates
                                WHERE google_place_id = n.google_place_id ORDER BY created_at DESC LIMIT 1) c ON true
             LEFT JOIN pick_scores ps ON ps.user_id = %s AND ps.google_place_id = n.google_place_id
             WHERE n.kind = 'pick'
             ORDER BY n.score DESC NULLS LAST, n.distance_m""", (started, lat, lng, LIST_M, uid)).fetchall()
     keys = ("name", "gid", "distance_m", "categories", "rating", "reviews", "score", "why", "lat", "lng",
-            "primary_type", "status", "this_run")
-    return [dict(zip(keys, r)) for r in rows]
+            "primary_type", "status", "source", "this_run")
+    picks = [dict(zip(keys, r)) for r in rows]
+    # as the app does: one suggestion per name (branches of the same place), the nearest
+    nearest = {}
+    for p in picks:
+        k = norm_name(p["name"])
+        if k not in nearest or p["distance_m"] < nearest[k]["distance_m"]:
+            nearest[k] = p
+    keep = {id(p) for p in nearest.values()}
+    return [p for p in picks if id(p) in keep]
 
 
 def far_scored(con, uid, lat, lng, started):
@@ -199,7 +208,9 @@ def check(picks, known, chains, not_place):
             flags.append(f"not a place to eat ({t.replace('_', ' ')})")
         if (p["status"] or "OPERATIONAL") != "OPERATIONAL":
             flags.append(f"not open ({p['status']})")
-        if p["rating"] and (p["reviews"] or 0) >= 20 and p["rating"] < 4.3 and not re.search(r"institution|specialty", p["why"] or "", re.I):
+        # the rating bar is for places found by Google search; an article or a city's institutions outweigh it
+        if (p["source"] == "Google Maps search" and p["rating"] and (p["reviews"] or 0) >= 20 and p["rating"] < 4.3
+                and not re.search(r"institution|specialty", p["why"] or "", re.I)):
             flags.append(f"rated {p['rating']}")
         if p["gid"] in known:
             flags.append("already saved or turned down")
@@ -214,7 +225,7 @@ def check(picks, known, chains, not_place):
             if rx.search(why) or rx.search(name):
                 flags.append(label)
         p["flags"] = flags
-        p["generic"] = bool(GENERIC.match(why))
+        p["generic"] = bool(GENERIC.search(why))
     return picks
 
 
@@ -280,8 +291,8 @@ def report_md(results, meta):
         for p in r["picks"][:10]:
             t = (p["primary_type"] or ((p["categories"] or [""])[0]) or "").replace("_", " ")
             rating = f"{p['rating']} ({p['reviews']})" if p["rating"] else ""
-            why = (p["why"] or "").replace("|", "/")
-            out.append(f"| {p['rank']} | {p['name']} | {t} | {rating} | {why} |  |")
+            cell = lambda x: (x or "").replace("|", "/").replace("\n", " ")  # noqa: E731
+            out.append(f"| {p['rank']} | {cell(p['name'])} | {t} | {rating} | {cell(p['why'])} |  |")
     return "\n".join(out) + "\n"
 
 

@@ -81,7 +81,7 @@ Deno.test('parseWeb: tolerant of chatter, skips nameless entries', () => {
   eq(parseWeb('nothing'), []);
 });
 
-const BEIJING = '{"size":"major","local":[{"name":"Peking roast duck","query":"peking roast duck restaurant","tags":["peking duck","roast duck","chinese"]},{"name":"Xinjiang food","query":"xinjiang restaurant","tags":["xinjiang","uyghur","central asian","chinese"]}],"strengths":[]}';
+const BEIJING = '{"city":"Beijing","size":"major","local":[{"name":"Peking roast duck","query":"peking roast duck restaurant","tags":["peking duck","roast duck","chinese"]},{"name":"Xinjiang food","query":"xinjiang restaurant","tags":["xinjiang","uyghur","central asian","chinese"]}],"strengths":[]}';
 
 Deno.test('away: local specialties first, your cuisines only if local, others only standouts; profile asked once', async () => {
   const asked: string[] = [];
@@ -226,7 +226,7 @@ Deno.test('web limit: a per-user limit replaces the default', async () => {
 });
 
 Deno.test('away: whole-label matching; small town skips the standout search; local searches keep the top 8, one branch each', async () => {
-  const town = '{"size":"small","local":[{"name":"Indian tacos","query":"indian taco","tags":["native american","frybread"]}],"strengths":[]}';
+  const town = '{"city":"Baker","size":"small","local":[{"name":"Indian tacos","query":"indian taco","tags":["native american","frybread"]}],"strengths":[]}';
   const p = parseAreaProfile(town)!;
   ok(!matches('indian', p.local[0]));
   const searches: string[] = [];
@@ -335,7 +335,7 @@ Deno.test('away: the web search is asked for institutions, and they rank higher'
   let prompt = '';
   const { d, saved } = deps({
     home: async () => ({ lat: 37.8, lng: -122.27 }),
-    getAreaProfile: async () => ({ size: 'major', local: [{ name: 'Cheesesteak', query: 'cheesesteak', tags: ['cheesesteak'] }], strengths: [], institutions: [], area: 'Philadelphia' }),
+    getAreaProfile: async () => ({ size: 'major', local: [{ name: 'Cheesesteak', query: 'cheesesteak', tags: ['cheesesteak'] }], strengths: [], institutions: [], area: 'Philadelphia', city: 'Philadelphia' }),
     claudeWeb: async (p) => ((prompt = p), { text: '```json\n[{"name":"Lardo","city":"Philadelphia","source":"Inquirer","source_url":"https://x.com/a"},{"name":"Zahav","city":"Philadelphia","institution":true,"source":"Inquirer","source_url":"https://x.com/b"}]\n```', searches: 2 }),
     googleSearch: async (q) => (q.startsWith('Zahav') ? [P('Z1', 'Zahav', ['restaurant'])] : [P('W1', 'Lardo', ['restaurant'])]),
   });
@@ -350,7 +350,7 @@ Deno.test('away: a cuisine saved at home gives at most 2 standouts, and the web 
   const { d, saved } = deps({
     topCuisines: async () => ['mexican'],
     home: async () => ({ lat: 37.8, lng: -122.27 }),
-    getAreaProfile: async () => ({ size: 'major', local: [{ name: 'Bagels', query: 'bagel shop', tags: ['bagels'] }], strengths: [], institutions: [], area: 'New York' }),
+    getAreaProfile: async () => ({ size: 'major', local: [{ name: 'Bagels', query: 'bagel shop', tags: ['bagels'] }], strengths: [], institutions: [], area: 'New York', city: 'New York' }),
     googleSearch: async (q) =>
       q.startsWith('mexican') ? [1, 2, 3, 4, 5].map((n) => P(`M${n}`, `Taqueria ${n}`, ['mexican_restaurant'], 4.7, 900)) : [P('B1', 'Bagel Hole', ['bagel_shop'], 4.6, 1200)],
   });
@@ -365,12 +365,12 @@ Deno.test('away: a cuisine saved at home gives at most 2 standouts, and the web 
   const w = deps({
     topCuisines: async () => ['mexican'],
     home: async () => ({ lat: 37.8, lng: -122.27 }),
-    getAreaProfile: async () => ({ size: 'major', local: [{ name: 'Bagels', query: 'bagel shop', tags: ['bagels'] }], strengths: [], institutions: [], area: 'New York' }),
+    getAreaProfile: async () => ({ size: 'major', local: [{ name: 'Bagels', query: 'bagel shop', tags: ['bagels'] }], strengths: [], institutions: [], area: 'New York', city: 'New York' }),
     claudeWeb: async (p) => ((prompt = p), { text: '```json\n[{"name":"Lardo","city":"New York","cuisine":"mexican","source":"Eater NY","source_url":"https://x.com/a"}]\n```', searches: 1 }),
   });
   await discoverWeb({ type: 'discover', mode: 'web', lat: 40.7, lng: -74.0, area_name: 'New York' }, w.d);
   ok(prompt.includes('That reflects where they live, not what they') && !prompt.includes('Their favorite cuisines'));
-  eq([w.saved[0].scores[0].score, w.saved[0].scores[0].reason], [0.75, 'From Eater NY']);
+  eq([w.saved[0].scores[0].score, w.saved[0].scores[0].reason], [0.575, 'From Eater NY']); // no rerank answer: fit 50
 });
 
 Deno.test('chains: regional chains are on the name list', () => {
@@ -412,7 +412,8 @@ Deno.test('rerank: Claude scores each place for this person with a specific reas
   eq((trace.rerank as { name: string }[])[0].name, 'Noodle Bar'); // 0.78 vs 0.705 for the oyster house
 
   const failed = await rerank(items, deps({ claudeText: async () => 'sorry' }).d, {});
-  eq(failed.map((x) => [x.google_place_id, x.score, x.reason]), items.map((x) => [x.id, x.score, x.reason]));
+  eq(failed.map((x) => x.reason), items.map((x) => x.reason)); // Discover's own reasons kept
+  eq(failed.map((x) => x.score), [0.5, 0.635, 0.59]); // same order as before, on the reranked scale (fit 50)
 });
 
 Deno.test('edited taste: hidden cuisines and dishes come out, added ones count now, dislikes listed', async () => {
@@ -456,4 +457,28 @@ Deno.test('reasons say you, not they', async () => {
   const { toYou } = await import('./discover.ts');
   eq(toYou('Coffee shop, and they like coffee cafes'), 'Coffee shop, and you like coffee cafes');
   eq(toYou("They saved Xi'an Famous; their kind of noodles"), "You saved Xi'an Famous; your kind of noodles");
+});
+
+Deno.test('rerank: a long list goes in batches, so every place is read; one failed batch keeps its own reasons', async () => {
+  const { rerank, RERANK_BATCH } = await import('./discover.ts');
+  const items = Array.from({ length: RERANK_BATCH * 2 + 5 }, (_, i) => ({ id: `P${i}`, name: `Place ${i}`, detail: '', score: 0.5, reason: 'old reason' }));
+  let calls = 0;
+  const d = deps({
+    claudeText: async (p) => {
+      calls++;
+      if (p.includes('1. Place 25\n')) return 'garbled'; // the second batch fails
+      const n = (p.match(/^\d+\. Place/gm) ?? []).length;
+      return JSON.stringify(Array.from({ length: n }, (_, i) => ({ n: i + 1, fit: 80, why: 'Specific reason' })));
+    },
+  }).d;
+  const out = await rerank(items, d, {});
+  eq(calls, 3);
+  eq(out.length, items.length);
+  eq(out.filter((x) => x.reason === 'Specific reason').length, RERANK_BATCH + 5);
+  eq(out.find((x) => x.google_place_id === 'P30')?.reason, 'old reason');
+});
+
+Deno.test('away: reasons use the city, not the neighborhood searched', async () => {
+  const { parseAreaProfile } = await import('./discover.ts');
+  eq(parseAreaProfile('{"city":"New York","size":"major","local":[{"name":"Bagels","query":"bagels","tags":["bagels"]}],"strengths":[],"institutions":[]}')?.city, 'New York');
 });

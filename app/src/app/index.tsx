@@ -482,6 +482,16 @@ export default function Nearby() {
       }
       return true;
     });
+    // one suggestion per name: branches of the same place (two Joe's Pizzas) show once, the nearest
+    const nearestOf = new Map<string, NearbyPlace>();
+    for (const p of list) {
+      if (p.kind !== 'pick') continue;
+      const k = p.name.toLowerCase().replace(/[’']/g, "'").replace(/[^a-z0-9' ]/g, '').trim();
+      const cur = nearestOf.get(k);
+      if (!cur || p.distance_m < cur.distance_m) nearestOf.set(k, p);
+    }
+    const keep = new Set(nearestOf.values());
+    for (let i = list.length - 1; i >= 0; i--) if (list[i].kind === 'pick' && !keep.has(list[i])) list.splice(i, 1);
     if (sort === 'match') {
       // starred places first, then the strongest picks (unscored new picks after them), then your saves:
       // Favorites, Want to go, others
