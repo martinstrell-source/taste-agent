@@ -437,3 +437,15 @@ Deno.test('vibes: kinds of places they like go to the food-press search', async 
   ok(prompt.includes('The kinds of places they like: hole in the wall, rooftop.'));
   ok(prompt.trim().endsWith('"source_url": "..."}'));
 });
+
+Deno.test('not a place to eat: caterers, butchers, delivery kitchens and groceries are dropped', async () => {
+  const { notAPlaceToEat } = await import('./discover.ts');
+  eq(notAPlaceToEat({ primaryType: 'catering_service', types: ['catering_service', 'food'] }), 'catering service');
+  eq(notAPlaceToEat({ types: ['butcher_shop', 'food_store'] }), 'butcher shop');
+  eq(notAPlaceToEat({ primaryType: 'restaurant', types: ['restaurant', 'catering_service'] }), null); // a restaurant that also caters is fine
+  const { d, saved } = deps({
+    googleSearch: async () => [P('C1', 'Hasson Caterers', ['catering_service', 'food']), { ...P('R1', 'Real Spot', ['restaurant']), primaryType: 'restaurant' }],
+  });
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, d);
+  ok(!saved[0].scores.some((x) => x.google_place_id === 'C1') && saved[0].scores.some((x) => x.google_place_id === 'R1'));
+});

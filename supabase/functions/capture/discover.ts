@@ -75,6 +75,13 @@ export const AWAY_KM = 100;
 const TOO_BROAD = new Set(['american', 'asian', 'european', 'fusion', 'cafe', 'restaurant', 'breakfast', 'brunch']);
 // global chains: never a discovery, home or away
 const CHAINS = /^(round table|mountain mike'?s|peet'?s|in-n-out|jack in the box|carl'?s jr|del taco|el pollo loco|panera|olive garden|applebee'?s|chili'?s|denny'?s|ihop|red robin|the cheesecake factory|cheesecake factory|p\.? ?f\.? chang'?s|buffalo wild wings|wingstop|jersey mike'?s|jimmy john'?s|firehouse subs|noodles & company|pieology|mod pizza|blaze pizza|the habit burger|togo'?s|jamba|black bear diner|marie callender'?s|raising cane'?s|whataburger|sonic drive-in|arby'?s|qdoba|texas roadhouse|red lobster|cracker barrel|cold stone|yogurtland|pinkberry|auntie anne'?s|cinnabon|jollibee|dutch bros|the coffee bean|coffee bean & tea leaf|tropical smoothie|smoothie king|sweetgreen|cava|pizza hut|kfc|mcdonald'?s|starbucks|domino'?s|subway|burger king|papa john'?s|dunkin'?|taco bell|wendy'?s|tim hortons|costa coffee|dairy queen|hard rock cafe|five guys|shake shack|popeyes|chick-fil-a|little caesars|panda express|chipotle|sizzler|tgi friday'?s|outback steakhouse|haagen-dazs|baskin-robbins|krispy kreme|7-eleven|family ?mart|lawson|luckin coffee|mixue|yoshinoya|sukiya|matsuya|coco ichibanya|saizeriya)\b/i;
+// food businesses that aren't somewhere to go eat or drink: a caterer, a butcher, a delivery kitchen, a grocery
+const NOT_A_PLACE = /^(catering_service|caterer|food_delivery|meal_delivery|butcher_shop|grocery_store|supermarket|convenience_store|wholesaler|food_store|asian_grocery_store|warehouse_store)$/;
+export function notAPlaceToEat(g: { primaryType?: unknown; types?: unknown }): string | null {
+  const t = (g.primaryType as string | undefined) ?? ((g.types as string[] | undefined) ?? [])[0];
+  return t && NOT_A_PLACE.test(t) ? t.replace(/_/g, ' ') : null;
+}
+
 export function isChain(name: string): boolean {
   return CHAINS.test(name.trim().replace(/[’`]/g, "'"));
 }
@@ -414,6 +421,7 @@ export async function findInstitutions(away: AreaProfile, input: DiscoverInput, 
       const rating = (g.rating as number | undefined) ?? 0;
       if ((g.businessStatus ?? 'OPERATIONAL') !== 'OPERATIONAL') return drop(`not open (${g.businessStatus})`);
       if (!types.some((x) => FOOD.test(x))) return drop('not food');
+      if (notAPlaceToEat(g)) return drop(`not a place to eat (${notAPlaceToEat(g)})`);
       if (rating && rating < 4.0) return drop(`rating ${rating}, under 4.0`);
       const row = toRow(g, itemId, 'Known locally', `What ${city} is known for`, null, { what_it_says: inst.why ? `${inst.why}.` : '' });
       if (row) rows.push(row);
@@ -513,6 +521,8 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
           const count = (g.userRatingCount as number | undefined) ?? 0;
           if ((g.businessStatus ?? 'OPERATIONAL') !== 'OPERATIONAL') return drop(`not open (${g.businessStatus})`);
           if (!types.some((t) => FOOD.test(t))) return drop(`not food (${types.slice(0, 3).join(', ')})`);
+          const notPlace = notAPlaceToEat(g);
+          if (notPlace) return drop(`not a place to eat (${notPlace})`);
           const rating = (g.rating as number | undefined) ?? 0;
           if (count >= 20 && rating < 4.3) return drop(`rating ${rating} from ${count} reviews, under 4.3`);
           // away from home, a non-local cuisine has to be a standout
@@ -686,6 +696,7 @@ export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps, trac
       const g = res.find((r) => similar(f.name, ((r.displayName as { text?: string } | undefined)?.text ?? '')));
       if (!g) return drop(`not found on Google in the area (Google had: ${res.slice(0, 3).map((r) => (r.displayName as { text?: string } | undefined)?.text).join(', ') || 'nothing'})`);
       if ((g.businessStatus ?? 'OPERATIONAL') !== 'OPERATIONAL') return drop(`not open (${g.businessStatus})`);
+      if (notAPlaceToEat(g)) return drop(`not a place to eat (${notAPlaceToEat(g)})`);
       if (isChain(((g.displayName as { text?: string } | undefined)?.text ?? ''))) return drop('chain');
       const itemId = `here:${key}:w:${f.source_url}`.slice(0, 500);
       if (!items.some((x) => x.item_id === itemId)) items.push({ item_id: itemId, source: f.source, title: f.source_title || f.source, link: f.source_url });

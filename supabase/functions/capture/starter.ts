@@ -1,7 +1,7 @@
 // First run: well-known places near a new user, for them to rate in onboarding
 // (Love it / Want to go / Not for me / haven't been). A dozen quick answers tell Discover more than a blank start.
 import { type Candidate, toCandidate } from './core.ts';
-import { type Box, boxAround, isChain } from './discover.ts';
+import { type Box, boxAround, isChain, notAPlaceToEat } from './discover.ts';
 
 export type StarterInput = { type: 'starter_places'; lat?: number; lng?: number; exclude?: string[] };
 export type StarterPlace = Candidate & { rating: number | null; reviews: number | null; kind: string };
@@ -35,7 +35,7 @@ export async function starterPlaces(input: StarterInput, deps: StarterDeps): Pro
           const name = ((g.displayName as { text?: string } | undefined)?.text ?? '').trim();
           const rating = (g.rating as number | undefined) ?? 0;
           const count = (g.userRatingCount as number | undefined) ?? 0;
-          return !!g.id && !skip.has(g.id as string) && !isChain(name) && (g.businessStatus ?? 'OPERATIONAL') === 'OPERATIONAL' && rating >= 4.2 && count >= 150;
+          return !!g.id && !skip.has(g.id as string) && !isChain(name) && !notAPlaceToEat(g) && (g.businessStatus ?? 'OPERATIONAL') === 'OPERATIONAL' && rating >= 4.2 && count >= 150;
         })
         // well known first: the point is places they've likely heard of or been to
         .sort((a, b) => ((b.userRatingCount as number) ?? 0) - ((a.userRatingCount as number) ?? 0))
