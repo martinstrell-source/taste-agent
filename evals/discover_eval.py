@@ -75,6 +75,74 @@ def rules_from_discover():
     return grab("CHAINS"), grab("NOT_A_PLACE")
 
 
+# ---------- what the place card shows ----------
+# The card's rules for hiding a line, as in app/src/components/PlaceCard.tsx (REVIEWS_ONLY is read from there).
+CARD_TOP = 25  # cards checked per place: the ones people are likely to open
+REVIEW_MENTION = re.compile(r"\breviews?\b|\bfew reviews\b", re.I)
+REVIEW_NUMBER = re.compile(r"(\d[\d,]*) reviews?\b|\((\d[\d,]*)\)", re.I)
+OLD_PLACE = re.compile(r"institution|since (1[89]|20)\d\d|long-running|old-school|classic|decades|landmark", re.I)
+
+
+def card_rules():
+    src = (ROOT / "app/src/components/PlaceCard.tsx").read_text()
+    m = re.search(r"const REVIEWS_ONLY = /(.+?)/(\w*);", src)
+    if not m:
+        raise SystemExit("Couldn't find REVIEWS_ONLY in PlaceCard.tsx")
+    return re.compile(m.group(1), re.I if "i" in m.group(2) else 0)
+
+
+def rating_text(rating, count):
+    """As ratingText in app/src/lib/format.ts."""
+    if not rating:
+        return None
+    count = count or 0
+    if count < 20:
+        return f"{count} review{'' if count == 1 else 's'}"
+    return f"{rating:.1f} ★ ({count:,})"
+
+
+def card_lines(p, reviews_only):
+    """The text lines a suggestion's card shows, in order, with where each comes from."""
+    lines = []
+    if p.get("just_opened"):
+        note = p.get("opened_note") or ""
+        lines.append(("just opened", "Just opened" + (f"  {note}" if note and not re.search(r"reviews? on Google", note, re.I) else "")))
+    facts = rating_text(p.get("rating"), p.get("reviews"))
+    if facts:
+        lines.append(("rating", facts))
+    note = (p.get("note") or "").strip()
+    if note and not reviews_only.search(note):
+        lines.append(("about it", note))
+    why = (p.get("why") or "").strip()
+    if why and not re.match(r"From ", why):
+        lines.append(("reason", why))
+    return lines
+
+
+def check_card(p, reviews_only):
+    """Repeated or contradictory information on one card."""
+    lines = card_lines(p, reviews_only)
+    flags = []
+    mentions = [src for src, text in lines if REVIEW_MENTION.search(text)]
+    if len(mentions) > 1:
+        flags.append(f"card repeats the review count ({', '.join(mentions)})")
+    numbers = set()
+    for _src, text in lines:
+        for m in REVIEW_NUMBER.finditer(text):
+            numbers.add(int((m.group(1) or m.group(2)).replace(",", "")))
+    if len(numbers) > 1:
+        flags.append(f"card gives different review counts ({', '.join(str(n) for n in sorted(numbers))})")
+    if p.get("just_opened"):
+        if (p.get("reviews") or 0) >= 100:
+            flags.append(f"card says just opened, but {p['reviews']} reviews")
+        if any(OLD_PLACE.search(text) for src, text in lines if src != "just opened"):
+            flags.append("card says just opened, and also long-established")
+    texts = [text.lower() for _src, text in lines]
+    if len(texts) != len(set(texts)):
+        flags.append("card shows the same line twice")
+    return flags
+
+
 def norm_name(s):
     return re.sub(r"[^a-z0-9 ]", "", (s or "").lower().replace("’", "'")).strip()
 
@@ -160,6 +228,7 @@ def suggestions(con, uid, lat, lng, started):
                     "set_config('request.jwt.claims', %s, true)", (uid, json.dumps({"sub": uid, "role": "authenticated"})))
         rows = con.execute("""
             SELECT n.name, n.google_place_id, n.distance_m, n.categories, n.rating, n.review_count, n.score, n.why,
+                   n.note, n.just_opened, n.opened_note,
                    n.place_lat, n.place_lng, c.primary_type, c.business_status, c.source,
                    ps.updated_at >= %s AS this_run
             FROM public.nearby(%s, %s, %s, 300, null) n
@@ -168,7 +237,8 @@ def suggestions(con, uid, lat, lng, started):
             LEFT JOIN pick_scores ps ON ps.user_id = %s AND ps.google_place_id = n.google_place_id
             WHERE n.kind = 'pick'
             ORDER BY n.score DESC NULLS LAST, n.distance_m""", (started, lat, lng, LIST_M, uid)).fetchall()
-    keys = ("name", "gid", "distance_m", "categories", "rating", "reviews", "score", "why", "lat", "lng",
+    keys = ("name", "gid", "distance_m", "categories", "rating", "reviews", "score", "why", "note", "just_opened",
+            "opened_note", "lat", "lng",
             "primary_type", "status", "source", "this_run")
     picks = [dict(zip(keys, r)) for r in rows]
     # as the app does: one suggestion per name (branches of the same place), the nearest
@@ -196,7 +266,7 @@ def far_scored(con, uid, lat, lng, started):
     return out
 
 
-def check(picks, known, chains, not_place):
+def check(picks, known, chains, not_place, reviews_only):
     seen = {}
     for p in picks:
         flags = []
@@ -224,6 +294,8 @@ def check(picks, known, chains, not_place):
         for rx, label in WORDING:
             if rx.search(why) or rx.search(name):
                 flags.append(label)
+        if p["rank"] <= CARD_TOP:
+            flags += check_card(p, reviews_only)
         p["flags"] = flags
         p["generic"] = bool(GENERIC.search(why))
     return picks
@@ -315,7 +387,7 @@ def main():
 
     t0 = time.time()
     con = connect()
-    rules = rules_from_discover()
+    rules = (*rules_from_discover(), card_rules())
     src = get_user(con, args.user)["uid"]
     print(f"Signing in the eval account ({EVAL_EMAIL})...")
     uid, token = eval_session(con)
