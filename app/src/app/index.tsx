@@ -5,9 +5,11 @@ import * as Location from 'expo-location';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   FlatList,
   Keyboard,
   Linking,
+  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -20,7 +22,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import AddPlace, { type Shared } from '@/components/AddPlace';
 import { Button, Chip, Icon, IconButton, Segmented } from '@/components/ui';
-import Swipeable, { SwipeDirection, type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import HiddenList from '@/components/HiddenList';
 import ImportPlaces from '@/components/ImportPlaces';
 import Onboarding from '@/components/Onboarding';
@@ -976,26 +977,39 @@ export default function Nearby() {
   );
 }
 
+// swipe a suggestion: right for Want to go, left for Not for me. React Native's own touch handling
+// (the gesture library's version didn't match Expo Go's)
+const SWIPE_AT = 90;
 function SwipeRow({ children, onWant, onNo }: { children: React.ReactNode; onWant: () => void; onNo: () => void }) {
-  const ref = useRef<SwipeableMethods>(null);
+  const x = useRef(new Animated.Value(0)).current;
+  const pan = useRef(
+    PanResponder.create({
+      // only a clearly sideways drag: vertical drags keep scrolling the list
+      onMoveShouldSetPanResponder: (_e, g) => Math.abs(g.dx) > 12 && Math.abs(g.dx) > Math.abs(g.dy) * 1.8,
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderMove: (_e, g) => x.setValue(g.dx),
+      onPanResponderRelease: (_e, g) => {
+        if (g.dx > SWIPE_AT) onWant();
+        else if (g.dx < -SWIPE_AT) onNo();
+        Animated.spring(x, { toValue: 0, useNativeDriver: true, bounciness: 4 }).start();
+      },
+      onPanResponderTerminate: () => Animated.spring(x, { toValue: 0, useNativeDriver: true }).start(),
+    }),
+  ).current;
+  const wantOpacity = x.interpolate({ inputRange: [0, 30], outputRange: [0, 1], extrapolate: 'clamp' });
+  const noOpacity = x.interpolate({ inputRange: [-30, 0], outputRange: [1, 0], extrapolate: 'clamp' });
   return (
-    <Swipeable
-      ref={ref}
-      friction={1.5}
-      leftThreshold={90}
-      rightThreshold={90}
-      overshootLeft={false}
-      overshootRight={false}
-      renderLeftActions={() => <SwipeAction label="Want to go" color={colors.saved} icon="bookmark.fill" align="left" />}
-      renderRightActions={() => <SwipeAction label="Not for me" color={colors.muted} icon="hand.thumbsdown.fill" align="right" />}
-      onSwipeableOpen={(dir) => {
-        ref.current?.close();
-        // RIGHT: the row moved right (swiped right), showing the left action
-        if (dir === SwipeDirection.RIGHT) onWant();
-        else onNo();
-      }}>
-      {children}
-    </Swipeable>
+    <View>
+      <Animated.View style={[StyleSheet.absoluteFill, { opacity: wantOpacity }]}>
+        <SwipeAction label="Want to go" color={colors.saved} icon="bookmark.fill" align="left" />
+      </Animated.View>
+      <Animated.View style={[StyleSheet.absoluteFill, { opacity: noOpacity }]}>
+        <SwipeAction label="Not for me" color={colors.muted} icon="hand.thumbsdown.fill" align="right" />
+      </Animated.View>
+      <Animated.View style={{ transform: [{ translateX: x }], backgroundColor: colors.bg }} {...pan.panHandlers}>
+        {children}
+      </Animated.View>
+    </View>
   );
 }
 
@@ -1158,7 +1172,7 @@ const styles = StyleSheet.create({
   },
   filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
   hint: { fontSize: 13, color: colors.muted },
-  swipeAction: { width: 130, justifyContent: 'center', paddingHorizontal: 18 },
+  swipeAction: { flex: 1, justifyContent: 'center', paddingHorizontal: 22 },
   swipeInner: { alignItems: 'center', gap: 4 },
   swipeText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   starter: { margin: 16, marginBottom: 8, padding: 14, gap: 8, borderRadius: corner.m, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line },
