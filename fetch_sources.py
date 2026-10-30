@@ -197,9 +197,18 @@ def google_search(query):
         return json.load(resp).get("places", [])
 
 
+def in_bay(g):
+    loc = g.get("location", {})
+    lat, lng = loc.get("latitude"), loc.get("longitude")
+    return lat is not None and haversine_m(lat, lng, *BAY_CENTER) <= BAY_MAX_KM * 1000
+
+
 def match_place(name, hint):
+    """The Google place a Bay Area article means. Only Bay Area places count: an article about an SF
+    branch of a New York bar must not match the New York original (the SF one may not be on Google yet;
+    rematch_openings tries again later)."""
     query = f"{name} {hint}".strip() if hint else f"{name} San Francisco Bay Area"
-    cands = google_search(query)
+    cands = [g for g in google_search(query) if in_bay(g)]
     if not cands:
         return None
     best = max(cands, key=lambda p: name_similarity(name, p.get("displayName", {}).get("text", "")))
@@ -387,7 +396,8 @@ def main():
         con.commit()
         print(f"  {source}: {title[:70]}  -> {len(places)} places" + ("  (full page)" if fetched_page else ""))
 
-    print(f"\nitems processed: {len(new_items)}, places stored: {n_places}, "
+    rematched = rematch_openings(con)
+    print(f"\nitems processed: {len(new_items)}, places stored: {n_places}, openings matched on a later try: {rematched}, "
           f"Google calls: {gcalls}, Claude tokens: {tin} in / {tout} out")
     q = """SELECT count(*), count(DISTINCT CASE WHEN is_food AND in_bay_area
                   AND coalesce(business_status,'OPERATIONAL')='OPERATIONAL'
@@ -397,6 +407,37 @@ def main():
     total, usable = con.execute(q).fetchone()
     print(f"candidates in table: {total}; distinct places usable for picks: {usable or 0}")
     con.close()
+
+
+def rematch_openings(con, days=120, limit=40):
+    """Places announced before they were on Google (no match then): try again each run, for up to 4 months."""
+    rows = con.execute("""SELECT item_id, name, location_hint FROM candidates
+                          WHERE match_confidence = 'no_match' AND mention_type = 'opening'
+                            AND created_at > now() - make_interval(days => %s)
+                          ORDER BY created_at DESC LIMIT %s""", (days, limit)).fetchall()
+    n = 0
+    for item_id, name, hint in rows:
+        try:
+            m = match_place(name, hint)
+        except Exception as ex:  # noqa: BLE001
+            print(f"  google error on {name!r}: {ex}")
+            continue
+        if not m:
+            continue
+        g, sim, conf = m
+        loc = g.get("location", {})
+        types = g.get("types", [])
+        con.execute("""UPDATE candidates SET google_place_id=%s, google_name=%s, address=%s, location=pt(%s, %s),
+                         categories=%s, primary_type=%s, business_status=%s, maps_uri=%s, name_similarity=%s,
+                         match_confidence=%s, is_food=%s, in_bay_area=true
+                       WHERE item_id=%s AND name=%s""",
+                    (g.get("id"), g.get("displayName", {}).get("text", ""), g.get("formattedAddress"),
+                     loc.get("latitude"), loc.get("longitude"), cats_list(types), g.get("primaryType"),
+                     g.get("businessStatus"), g.get("googleMapsUri"), round(sim, 3), conf,
+                     is_food_types(types), item_id, name))
+        n += 1
+    con.commit()
+    return n
 
 
 if __name__ == "__main__":

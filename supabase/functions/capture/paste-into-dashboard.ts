@@ -1013,7 +1013,7 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
   const here = input.area_name ?? 'here';
   trace.your_cuisines = all.slice(0, 8);
   // kind sets how much a result counts (base) and the bar it has to clear (strict = standouts only)
-  type Q = { c: string; q: string; label: string; cuisine: string | null; base: number; strict: boolean; local?: boolean; reason: string };
+  type Q = { c: string; q: string; label: string; cuisine: string | null; base: number; strict: boolean; local?: boolean; cap?: number; reason: string };
   let queries: Q[];
   if (!away) {
     const cuisines = all.slice(0, 5);
@@ -1030,7 +1030,7 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
       ...yoursLocal.map((c) => ({ c, q: `${nice(c)} restaurant`, label: `${nice(c)} near ${here}`, cuisine: c, base: 1, strict: false, reason: `${cap(nice(c))}: you save a lot of it, and ${input.area_name ?? 'this area'} does it especially well` })),
       ...away.strengths.slice(0, 2).map((sp) => ({ c: `strength-${slug(sp.name)}`, q: sp.query, label: `${sp.name} in ${here}`, cuisine: sp.name.toLowerCase(), base: 0.8, strict: false, reason: `${sp.name}: something ${input.area_name ?? 'this area'} does especially well` })),
       // a non-local standout only in a major food city; a 4.6 rating means little in a small market
-      ...(other && away.size === 'major' ? [{ c: `${other}:standout`, q: `${nice(other)} restaurant`, label: `${nice(other)} near ${here}`, cuisine: other, base: 0.5, strict: true, reason: `${cap(nice(other))}: one of the cuisines you save most, and a standout here` }] : []),
+      ...(other && away.size === 'major' ? [{ c: `${other}:standout`, q: `${nice(other)} restaurant`, label: `${nice(other)} near ${here}`, cuisine: other, base: 0.5, strict: true, cap: 2, reason: `${cap(nice(other))}: one of the cuisines you save most, and a standout here` }] : []),
     ];
   }
   const known = await deps.knownIds();
@@ -1096,12 +1096,15 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
           if (Q.strict && (count < 150 || rating < 4.6)) return drop(`not a standout: ${rating} from ${count} reviews (needs 4.6+ and 150+)`);
           // away from home, few reviews often means few people use Google there, not a new place
           if (away && count < 20 && !Q.local) return drop(`only ${count} Google reviews, away from home`);
+          // away from home, a cuisine you save at home is only a side dish: a couple of standouts at most
+          if (Q.cap && kept.length >= Q.cap) return drop(`already have ${Q.cap} from this search`);
           const row = toRow(g, itemId, 'Google Maps search', Q.label, null, {
             cuisine: Q.cuisine,
             what_it_says: count < 20 ? (away ? `Only ${count} reviews on Google.` : `New: ${count} reviews on Google.`) : `${(g.rating as number).toFixed(1)} stars from ${count} reviews on Google.`,
           });
           if (row) rows.push(row);
         }
+        if (g._cached && Q.cap && kept.length >= Q.cap) return drop(`already have ${Q.cap} from this search`);
         // fit: stronger kinds and higher in the results score higher; quality from Google rating
         // (a reused search has no rating here, so it gets the middle quality)
         const fit = Q.base * (1 - rank / 25);
@@ -1152,9 +1155,9 @@ export function webPrompt(area: string, cuisines: string[], away?: AreaProfile |
 function webPromptBase(area: string, cuisines: string[], away?: AreaProfile | null): string {
   if (away) {
     return `Find restaurants, cafes, bakeries and bars in or near ${area} for a visitor who travels for food.
-Their favorite cuisines: ${cuisines.map(nice).join(', ') || 'varied'}.
-Favor what ${area} is known for and does better than elsewhere: ${[...away.local, ...away.strengths].map((x) => x.name).join(', ')}.
-Their favorite cuisines count when they are also strong here. Include other non-local food only when the place is a
+Focus on what ${area} is known for and does better than elsewhere: ${[...away.local, ...away.strengths].map((x) => x.name).join(', ')}.
+At home they save a lot of ${cuisines.map(nice).join(', ') || 'varied food'}. That reflects where they live, not what they
+want here: include those only where ${area} is known for them. Include other non-local food only when the place is a
 standout that local food writers single out, or a local take on it. Include the institutions ${area} is famous for
 that locals still go to, and mark them "institution": true. Skip chains and tourist traps locals avoid.
 Use the local food press, local guides and recent reviews. Places must be open now.`;
@@ -1265,13 +1268,14 @@ export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps, trac
       const liked = !!f.cuisine && cuisines.some((c) => f.cuisine.includes(nice(c)) || nice(c).includes(f.cuisine));
       const local = !!away && [...away.local, ...away.strengths].some((sp) => (!!f.cuisine && matches(f.cuisine, sp)) || f.dishes.some((x) => matches(x, sp)));
       const famous = !!away && f.institution;
-      const score = 0.75 - i * 0.01 + (liked ? 0.1 : 0) + (local ? 0.1 : 0) + (famous ? 0.15 : 0);
+      // away from home, a cuisine they save at home only counts where this city is known for it
+      const score = 0.75 - i * 0.01 + (liked && (!away || local) ? 0.1 : 0) + (local ? 0.1 : 0) + (famous ? 0.15 : 0);
       const city = away?.area ?? input.area_name ?? 'local';
       const where = away?.area ?? input.area_name ?? 'this area';
       const reason = famous ? `A ${city} institution. From ${f.source}`
         : liked && local ? `${cap(f.cuisine)}: you save a lot of it, and ${where} does it especially well. From ${f.source}`
         : local ? `Local specialty. From ${f.source}`
-        : liked ? `${cap(f.cuisine)}: one of the cuisines you save most. From ${f.source}`
+        : liked && !away ? `${cap(f.cuisine)}: one of the cuisines you save most. From ${f.source}`
         : `From ${f.source}`;
       scores.push({ google_place_id: row.google_place_id, score: Math.round(score * 1000) / 1000, reason });
       t.result = `kept (${Math.round(score * 100)}): ${reason}`;

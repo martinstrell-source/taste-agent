@@ -336,3 +336,30 @@ Deno.test('away: the web search is asked for institutions, and they rank higher'
   ok(s.Z1.score > s.W1.score);
   eq(s.Z1.reason, 'A Philadelphia institution. From Inquirer');
 });
+
+Deno.test('away: a cuisine saved at home gives at most 2 standouts, and the web search treats it as background', async () => {
+  const { d, saved } = deps({
+    topCuisines: async () => ['mexican'],
+    home: async () => ({ lat: 37.8, lng: -122.27 }),
+    getAreaProfile: async () => ({ size: 'major', local: [{ name: 'Bagels', query: 'bagel shop', tags: ['bagels'] }], strengths: [], institutions: [], area: 'New York' }),
+    googleSearch: async (q) =>
+      q.startsWith('mexican') ? [1, 2, 3, 4, 5].map((n) => P(`M${n}`, `Taqueria ${n}`, ['mexican_restaurant'], 4.7, 900)) : [P('B1', 'Bagel Hole', ['bagel_shop'], 4.6, 1200)],
+  });
+  const trace: Record<string, unknown> = {};
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 40.7, lng: -74.0, area_name: 'New York' }, d, trace);
+  const ids = saved[0].scores.map((x) => x.google_place_id);
+  eq(ids.filter((x) => x.startsWith('M')).length, 2);
+  eq(saved[0].rows.filter((r) => r.google_place_id.startsWith('M')).length, 2); // the rest aren't stored as picks either
+  ok(ids.includes('B1'));
+
+  let prompt = '';
+  const w = deps({
+    topCuisines: async () => ['mexican'],
+    home: async () => ({ lat: 37.8, lng: -122.27 }),
+    getAreaProfile: async () => ({ size: 'major', local: [{ name: 'Bagels', query: 'bagel shop', tags: ['bagels'] }], strengths: [], institutions: [], area: 'New York' }),
+    claudeWeb: async (p) => ((prompt = p), { text: '```json\n[{"name":"Lardo","city":"New York","cuisine":"mexican","source":"Eater NY","source_url":"https://x.com/a"}]\n```', searches: 1 }),
+  });
+  await discoverWeb({ type: 'discover', mode: 'web', lat: 40.7, lng: -74.0, area_name: 'New York' }, w.d);
+  ok(prompt.includes('That reflects where they live, not what they') && !prompt.includes('Their favorite cuisines'));
+  eq([w.saved[0].scores[0].score, w.saved[0].scores[0].reason], [0.75, 'From Eater NY']);
+});

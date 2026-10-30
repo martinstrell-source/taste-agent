@@ -13,12 +13,15 @@ async function userId(): Promise<string> {
 export async function pickMentions(googleId: string): Promise<Mention[]> {
   const { data } = await supabase
     .from('candidates')
-    .select('source, item_title, item_link, published, what_it_says, created_at')
+    .select('source, item_title, item_link, published, what_it_says, created_at, item_id, in_bay_area')
     .eq('google_place_id', googleId)
     .order('created_at', { ascending: false })
-    .limit(5);
+    .limit(8);
   const seen = new Set<string>();
   return (data ?? [])
+    // a Bay Area article matched to a place outside the Bay Area is about some other place with the same name
+    .filter((r) => String(r.item_id ?? '').startsWith('here:') || r.in_bay_area !== false)
+    .slice(0, 5)
     .filter((r) => {
       // one line per article; Google searches (several queries can find the same place) count once
       const k = r.source === 'Google Maps search' || r.source === 'Known locally' ? r.source : (r.item_link ?? r.item_title ?? '');
