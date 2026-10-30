@@ -128,6 +128,11 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
               )}
             </View>
 
+            {!!place.just_opened && (
+              <Text style={styles.opened}>
+                Just opened{place.opened_note ? <Text style={styles.muted}>{`  ${place.opened_note}`}</Text> : null}
+              </Text>
+            )}
             {(facts || open !== null || loading) && (
               <View style={styles.factsRow}>
                 {!!facts && <Text style={styles.facts}>{facts}</Text>}
@@ -265,6 +270,7 @@ const styles = StyleSheet.create({
   hideRow: { flexDirection: 'row', gap: 8 },
   side: { paddingHorizontal: 12 },
   why: { fontSize: 15, fontWeight: '600', color: colors.pick },
+  opened: { fontSize: 15, fontWeight: '700', color: colors.pick },
   visit: { gap: 3, paddingVertical: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
   visitHead: { fontSize: 15, fontWeight: '600', color: colors.text },
   thumb: { width: 72, height: 72, borderRadius: 8, backgroundColor: colors.line },

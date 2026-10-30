@@ -130,6 +130,7 @@ export default function Nearby() {
   const [kind, setKind] = useState<Kind>('all');
   const [prices, setPrices] = useState<Set<string>>(new Set());
   const [openNow, setOpenNow] = useState(false);
+  const [justOpened, setJustOpened] = useState(false);
   const [checking, setChecking] = useState(false);
 
   // hide with undo
@@ -457,6 +458,7 @@ export default function Nearby() {
         }
         if (!prices.has(pr)) return false;
       }
+      if (justOpened && !p.just_opened) return false;
       if (openNow) {
         const o = isOpenNow(p.opening_hours);
         if (o === null) {
@@ -475,9 +477,9 @@ export default function Nearby() {
       list.sort((a, b) => rank(a) - rank(b) || (b.score ?? 0) - (a.score ?? 0) || a.distance_m - b.distance_m);
     }
     return { shown: list, unknown: unknownCount };
-  }, [merged, hiddenGroups, kind, prices, openNow, sort, starred]);
+  }, [merged, hiddenGroups, kind, prices, openNow, justOpened, sort, starred]);
 
-  const activeFilters = (kind !== 'all' ? 1 : 0) + (prices.size ? 1 : 0) + (openNow ? 1 : 0) + (sort === 'match' ? 1 : 0);
+  const activeFilters = (kind !== 'all' ? 1 : 0) + (prices.size ? 1 : 0) + (openNow ? 1 : 0) + (justOpened ? 1 : 0) + (sort === 'match' ? 1 : 0);
 
   function toggleGroup(g: Group) {
     setHiddenGroups((h) => {
@@ -803,6 +805,7 @@ export default function Nearby() {
               <Chip key={p} label={p} on={prices.has(p)} onPress={() => togglePrice(p)} />
             ))}
             <Chip label="Open now" icon="clock" on={openNow} onPress={() => setOpenNow((o) => !o)} />
+            <Chip label="Just opened" icon="sparkle" on={justOpened} onPress={() => setJustOpened((o) => !o)} />
             {checking && <ActivityIndicator size="small" />}
           </View>
           {needDetails && unknown > 0 && !checking && (
@@ -963,11 +966,15 @@ function Row({ place, starred, onPress }: { place: NearbyPlace; starred: boolean
           {[placeLabel(place), cats, facts].filter(Boolean).join(' · ')}
         </Text>
         {/* the full reason is on the card; the list only flags a city's institutions */}
-        {place.kind === 'pick' && /institution/i.test(place.why ?? '') && (
+        {place.just_opened ? (
+          <Text style={styles.why} numberOfLines={1}>
+            Just opened
+          </Text>
+        ) : place.kind === 'pick' && /institution/i.test(place.why ?? '') ? (
           <Text style={styles.why} numberOfLines={1}>
             Local institution
           </Text>
-        )}
+        ) : null}
         {!!place.note && (
           <Text style={styles.note} numberOfLines={2}>
             {place.note}

@@ -19,7 +19,7 @@ const LIST_LABELS: Record<string, string> = {
 
 export function placeLabel(p: NearbyPlace): string {
   if (p.from_search) return 'Search result';
-  if (p.kind === 'pick') return 'New pick';
+  if (p.kind === 'pick') return 'Suggested'; // new to you, not necessarily a new place
   if (!p.list_name) return 'Saved';
   return LIST_LABELS[p.list_name] ?? p.list_name.replace(/_/g, ' ');
 }
@@ -70,7 +70,7 @@ export const GROUP_LABEL: Record<Group, string> = {
   favorites: 'Favorites',
   want_to_go: 'Want to go',
   other: 'Other lists',
-  pick: 'New picks',
+  pick: 'Suggested',
 };
 
 // ---------- Google details: price, rating ----------

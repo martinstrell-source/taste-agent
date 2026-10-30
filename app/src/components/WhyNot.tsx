@@ -23,7 +23,7 @@ export default function WhyNot({ name, onDone }: { name: string; onDone: (note: 
   return (
     <View style={styles.wrap}>
       <Text style={styles.title}>Why not {name}?</Text>
-      <Text style={styles.hint}>Optional. New picks will leave out places like this.</Text>
+      <Text style={styles.hint}>Optional. Suggestions will leave out places like this.</Text>
       <View style={styles.chips}>
         {REASONS.map((r) => (
           <Chip key={r} label={r} on={chosen.has(r)} onPress={() => toggle(r)} />
