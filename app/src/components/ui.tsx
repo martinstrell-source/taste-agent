@@ -58,12 +58,23 @@ export function Button({
       {busy ? (
         <ActivityIndicator color={fg} />
       ) : (
-        <View style={styles.btnInner}>
-          {icon && <Icon name={icon} color={fg} size={small ? 14 : 16} />}
-          <Text style={[styles.btnText, small && styles.btnTextSmall, { color: fg }]} numberOfLines={2} maxFontSizeMultiplier={1.1}>
-            {title}
-          </Text>
-        </View>
+        // no row around the label unless there's an icon: a label in a row is measured on one line and cut
+        // off instead of wrapping when the button is narrow (small phones, larger text)
+        (() => {
+          const label = (
+            <Text style={[styles.btnText, small && styles.btnTextSmall, { color: fg }]} numberOfLines={2} maxFontSizeMultiplier={1}>
+              {title}
+            </Text>
+          );
+          return icon ? (
+            <View style={styles.btnInner}>
+              <Icon name={icon} color={fg} size={small ? 14 : 16} />
+              <View style={{ flexShrink: 1 }}>{label}</View>
+            </View>
+          ) : (
+            label
+          );
+        })()
       )}
     </Pressable>
   );
@@ -118,7 +129,7 @@ export function Chip({
       accessibilityState={{ selected: on }}
       style={({ pressed }) => [styles.chip, on ? { backgroundColor: fill, borderColor: fill } : null, pressed && { opacity: 0.8 }]}>
       {icon ? <Icon name={icon} color={on ? '#fff' : colors.text} size={13} /> : color ? <View style={[styles.dot, { backgroundColor: on ? '#fff' : color }]} /> : null}
-      <Text style={[styles.chipText, on && { color: '#fff' }]} numberOfLines={1} maxFontSizeMultiplier={1.1} adjustsFontSizeToFit minimumFontScale={0.8}>
+      <Text style={[styles.chipText, on && { color: '#fff' }]} numberOfLines={1} maxFontSizeMultiplier={1}>
         {label}
       </Text>
     </Pressable>
@@ -147,7 +158,7 @@ export function Segmented<T extends string | number>({
             accessibilityRole="button"
             accessibilityState={{ selected: on }}
             style={[styles.segBtn, on && styles.segOn]}>
-            <Text style={[styles.segText, on && styles.segTextOn]} numberOfLines={1} maxFontSizeMultiplier={1.1} adjustsFontSizeToFit minimumFontScale={0.7}>
+            <Text style={[styles.segText, on && styles.segTextOn]} numberOfLines={1} maxFontSizeMultiplier={1}>
               {o.label}
             </Text>
           </Pressable>
@@ -173,7 +184,7 @@ const styles = StyleSheet.create({
   btn: { borderRadius: radius.m, paddingVertical: 14, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center' },
   btnSmall: { paddingVertical: 9, paddingHorizontal: 8, borderRadius: radius.s },
   btnInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, maxWidth: '100%' },
-  btnText: { flexShrink: 1, fontSize: 16, fontWeight: '700', textAlign: 'center' },
+  btnText: { fontSize: 16, fontWeight: '700', textAlign: 'center' },
   btnTextSmall: { fontSize: 14, fontWeight: '600' },
   outline: { borderWidth: 1.5, borderColor: colors.text },
   iconBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
