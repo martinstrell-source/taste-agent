@@ -82,6 +82,8 @@ export function notAPlaceToEat(g: { primaryType?: unknown; types?: unknown }): s
   return t && NOT_A_PLACE.test(t) ? t.replace(/_/g, ' ') : null;
 }
 
+const reviews = (n: number) => `${n} review${n === 1 ? '' : 's'}`;
+
 export function isChain(name: string): boolean {
   return CHAINS.test(name.trim().replace(/[’`]/g, "'"));
 }
@@ -106,8 +108,9 @@ ${places.map((p, i) => `${i + 1}. ${p.name}${p.detail ? ` (${p.detail})` : ''}`)
 
 For every place:
 - "fit": 0-100, how likely this person is to want to try it, from their taste (not just popularity).
-- "why": one short reason for this person, specific where you can ("Hand-pulled noodles, like Xi'an Famous you
-  saved"). Plain words, under 12 words, no flattery. Don't claim they've been anywhere.
+- "why": one short reason, written to them as "you", specific where you can ("Hand-pulled noodles, like Xi'an
+  Famous you saved"). Never "they" or "the user". Plain words, under 12 words, no flattery. Don't claim they've
+  been anywhere.
 - "chain": true for a business with many locations under the same name across a region or the country
   (Round Table Pizza, Peet's Coffee, Panera). A local business with a few locations in one city is not a chain.${dislikes.length ? `
 - "no": true only when the name or details make it clear they'd turn it down for the reasons they gave
@@ -533,7 +536,7 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
           if (Q.cap && kept.length >= Q.cap) return drop(`already have ${Q.cap} from this search`);
           const row = toRow(g, itemId, 'Google Maps search', Q.label, null, {
             cuisine: Q.cuisine,
-            what_it_says: count < 20 ? (away ? `Only ${count} reviews on Google.` : `New: ${count} reviews on Google.`) : `${(g.rating as number).toFixed(1)} stars from ${count} reviews on Google.`,
+            what_it_says: count < 20 ? (away ? `Only ${reviews(count)} on Google.` : `New: ${reviews(count)} on Google.`) : `${(g.rating as number).toFixed(1)} stars from ${reviews(count)} on Google.`,
           });
           if (row) rows.push(row);
         }

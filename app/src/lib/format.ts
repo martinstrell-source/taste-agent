@@ -88,10 +88,10 @@ export function priceText(level?: string | null): string | null {
   return level ? (PRICE[level] ?? null) : null;
 }
 
-// "4.6 ★ (812)" or "New: 12 reviews" (ratings mean little with few reviews)
+// "4.6 ★ (812)", or "12 reviews" when there are few (the stars mean little then)
 export function ratingText(rating?: number | null, count?: number | null): string | null {
   if (!rating) return null;
-  if ((count ?? 0) < 20) return `New: ${count ?? 0} reviews`;
+  if ((count ?? 0) < 20) return `${count ?? 0} review${count === 1 ? '' : 's'}`; // few reviews: the stars mean little
   return `${rating.toFixed(1)} ★ (${(count ?? 0).toLocaleString()})`;
 }
 
