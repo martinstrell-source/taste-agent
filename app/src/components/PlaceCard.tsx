@@ -43,6 +43,9 @@ function shortDate(iso: string): string {
 }
 
 // Bottom card with the basics for one place
+// Discover's own notes for places found by Google search: "4.4 stars from 67 reviews on Google.", "Only 1 review on Google."
+const REVIEWS_ONLY = /^(new: |only )?([\d.]+ stars from )?\d+ reviews? on google\.?$/i;
+
 export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLogVisit, visitsKey, onDetails, starred, onStar, askWhy }: Props) {
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
@@ -132,7 +135,9 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
 
             {!!place.just_opened && (
               <Text style={styles.opened}>
-                Just opened{place.opened_note ? <Text style={styles.muted}>{`  ${place.opened_note}`}</Text> : null}
+                Just opened
+                {/* the review count is already on the line below; only say where an opening was reported */}
+                {place.opened_note && !/reviews? on Google/i.test(place.opened_note) ? <Text style={styles.muted}>{`  ${place.opened_note}`}</Text> : null}
               </Text>
             )}
             {(facts || open !== null || loading) && (
@@ -150,7 +155,8 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
 
             {!!categoryText(place) && <Text style={styles.muted}>{categoryText(place, 5)}</Text>}
             {!!place.address && <Text style={styles.text}>{place.address}</Text>}
-            {!!place.note && (
+            {/* a note that only repeats Google's stars and review count adds nothing to the line above */}
+            {!!place.note && !(place.kind === 'pick' && REVIEWS_ONLY.test(place.note.trim())) && (
               <View style={styles.noteBox}>
                 <Text style={styles.noteLabel}>
                   {place.kind !== 'pick' ? 'Your note' : mentions.some((m) => m.link?.startsWith('http')) ? 'What the article said' : 'About it'}
