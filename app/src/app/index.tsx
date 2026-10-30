@@ -964,9 +964,10 @@ function Row({ place, starred, onPress }: { place: NearbyPlace; starred: boolean
         <Text style={styles.meta} numberOfLines={1}>
           {[placeLabel(place), cats, facts].filter(Boolean).join(' · ')}
         </Text>
-        {place.kind === 'pick' && !!place.why && (
+        {/* the full reason is on the card; the list only flags a city's institutions */}
+        {place.kind === 'pick' && /institution/i.test(place.why ?? '') && (
           <Text style={styles.why} numberOfLines={1}>
-            {place.why}
+            Local institution
           </Text>
         )}
         {!!place.note && (

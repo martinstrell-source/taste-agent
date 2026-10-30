@@ -141,7 +141,6 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
               </View>
             )}
 
-            {place.kind === 'pick' && !!place.why && <Text style={styles.why}>{place.why}</Text>}
             {!!categoryText(place) && <Text style={styles.muted}>{categoryText(place, 5)}</Text>}
             {!!place.address && <Text style={styles.text}>{place.address}</Text>}
             {!!place.note && (
@@ -166,6 +165,7 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
                 )}
               </View>
             ))}
+            {place.kind === 'pick' && !!place.why && <Text style={styles.why}>{place.why}</Text>}
             {!!source && <Text style={styles.source}>{source}</Text>}
             {visits.length > 0 && <Text style={styles.noteLabel}>Your visits</Text>}
             {visits.map((v) => (
