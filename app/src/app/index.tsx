@@ -785,7 +785,6 @@ export default function Nearby() {
       {showFilters && (
         <View style={styles.filters}>
           <View style={styles.filterRow}>
-            <Text style={styles.filterLabel}>Sort</Text>
             <Segmented
               style={{ flex: 1 }}
               options={[
@@ -797,7 +796,6 @@ export default function Nearby() {
             />
           </View>
           <View style={styles.filterRow}>
-            <Text style={styles.filterLabel}>Show</Text>
             <Segmented style={{ flex: 1 }} options={KINDS.map((k) => ({ value: k.key, label: k.label }))} value={kind} onChange={setKind} />
           </View>
           <View style={styles.filterRow}>
@@ -1088,7 +1086,6 @@ const styles = StyleSheet.create({
   },
   filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
   hint: { fontSize: 13, color: colors.muted },
-  filterLabel: { width: 40, fontSize: 13, fontWeight: '600', color: colors.muted },
   starter: { margin: 16, marginBottom: 8, padding: 14, gap: 8, borderRadius: corner.m, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line },
   starterTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
   starterText: { fontSize: 14, lineHeight: 20, color: colors.muted },
