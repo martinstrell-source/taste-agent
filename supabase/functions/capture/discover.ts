@@ -168,6 +168,26 @@ export function liftScore(share: number, base: number, maxShare: number, cap = 8
   return 0.5 * distinct + 0.5 * Math.min(1, share / maxShare);
 }
 
+// the profile as the user has edited it ("Your taste" in the app): cuisines and dishes they hid come out,
+// ones they added count now (the weekly rebuild on the mini folds them in properly)
+export type Pref = { kind: string; value: string };
+const normC = (c: string) => c.trim().toLowerCase().replace(/-/g, ' ').replace(/ /g, '_');
+export function editedTaste(prof: { cuisines?: Record<string, { share?: number }>; dishes?: Record<string, number> } | null, prefs: Pref[]) {
+  const hideC = new Set(prefs.filter((p) => p.kind === 'not_cuisine').map((p) => normC(p.value)));
+  const hideD = new Set(prefs.filter((p) => p.kind === 'not_dish').map((p) => p.value.trim().toLowerCase()));
+  const cuisines: Record<string, { share: number }> = {};
+  for (const [c, v] of Object.entries(prof?.cuisines ?? {})) if (!hideC.has(c)) cuisines[c] = { share: v?.share ?? 0 };
+  const top = Math.max(0.05, ...Object.values(cuisines).map((v) => v.share));
+  for (const p of prefs) {
+    const c = normC(p.value);
+    if (p.kind === 'cuisine' && c && !hideC.has(c) && !(c in cuisines)) cuisines[c] = { share: top / 2 };
+  }
+  const dishes = [...new Set([...Object.keys(prof?.dishes ?? {}), ...prefs.filter((p) => p.kind === 'dish').map((p) => p.value.trim().toLowerCase())])]
+    .filter((d) => d && !hideD.has(d));
+  const avoid = prefs.filter((p) => p.kind.startsWith('dislike_')).map((p) => p.value);
+  return { cuisines, dishes, avoid };
+}
+
 // the user's cuisines, most telling first: saving a lot of Mexican in the Bay Area says less than saving Burmese
 export function rankCuisines(
   profile: Record<string, { share?: number; count?: number }>,

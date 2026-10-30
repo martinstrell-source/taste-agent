@@ -238,6 +238,14 @@ def main():
         elif kind in DISLIKE_KEY:
             dislikes[DISLIKE_KEY[kind]].append(norm_cuisine(value) if kind == "dislike_cuisine" else value)
 
+    # edits from the app's "Your taste" screen: things the user said aren't them come out
+    hidden_cuisines = {norm_cuisine(v) for k, v in prefs if k == "not_cuisine"}
+    hidden_dishes = {v.strip().lower() for k, v in prefs if k == "not_dish"}
+    for c in hidden_cuisines:
+        cuisines.pop(c, None)
+    for d in hidden_dishes:
+        dishes.pop(d, None)
+
     n = n or 1  # empty profile (nothing enriched yet) still writes a valid file
     top_source = max(sources.values()) if sources else 1
     profile = {
@@ -260,6 +268,7 @@ def main():
         "avoid": avoid,
         "dislikes": dislikes,
         "stated_cuisines": sorted({norm_cuisine(v) for k, v in prefs if k == "cuisine"}),
+        "hidden": {"cuisines": sorted(hidden_cuisines), "dishes": sorted(hidden_dishes)},
         "n_stated": len(prefs),
     }
     con.execute("""INSERT INTO user_profiles (user_id, profile, updated_at) VALUES (%s, %s, now())

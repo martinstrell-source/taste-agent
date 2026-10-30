@@ -22,6 +22,7 @@ import MapView, { Marker, PROVIDER_GOOGLE, type Region } from 'react-native-maps
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import AddPlace, { type Shared } from '@/components/AddPlace';
+import TasteProfile from '@/components/TasteProfile';
 import { Button, Chip, Icon, IconButton, Segmented } from '@/components/ui';
 import HiddenList from '@/components/HiddenList';
 import ImportPlaces from '@/components/ImportPlaces';
@@ -134,6 +135,7 @@ export default function Nearby() {
   const [prices, setPrices] = useState<Set<string>>(new Set());
   const [openNow, setOpenNow] = useState(false);
   const [justOpened, setJustOpened] = useState(false);
+  const [showTaste, setShowTaste] = useState(false);
   const [askWhy, setAskWhy] = useState(false); // the card opens straight to "Why not?" after a swipe left
   const [checking, setChecking] = useState(false);
 
@@ -559,7 +561,12 @@ export default function Nearby() {
           onPress: async () => {
             const ids = shownPicks.map((p) => p.google_place_id ?? p.ref);
             const { error } = await supabase.rpc('clear_suggestions', { ids });
-            if (error) setError(/clear_suggestions/.test(error.message) ? 'This needs the latest database update (run deploy.sh).' : error.message);
+            // say so where they are (the error line is at the top of the list, out of sight from the button)
+            if (error)
+              Alert.alert(
+                "Couldn't clear them",
+                /clear_suggestions|function/i.test(error.message) ? 'The database needs the latest update: run deploy.sh on the Mac mini.' : error.message,
+              );
             else setReload((n2) => n2 + 1);
           },
         },
@@ -906,6 +913,7 @@ export default function Nearby() {
           }
           ListFooterComponent={
             <View style={styles.footer}>
+              <Button title="Your taste" icon="person.crop.circle" kind="secondary" small onPress={() => setShowTaste(true)} />
               <Button title="Import places" icon="square.and.arrow.down" kind="secondary" small onPress={() => setShowImport(true)} />
               <Button title="Hidden places" icon="eye.slash" kind="secondary" small onPress={() => setShowHidden(true)} />
               {shownPicks.length > 0 && (
@@ -1001,6 +1009,7 @@ export default function Nearby() {
           if (importNext) setTimeout(() => setShowImport(true), 600); // after the onboarding sheet has closed
         }}
       />
+      <TasteProfile visible={showTaste} onClose={() => setShowTaste(false)} />
       <HiddenList visible={showHidden} onClose={() => setShowHidden(false)} onChanged={() => setReload((n) => n + 1)} />
     </SafeAreaView>
   );

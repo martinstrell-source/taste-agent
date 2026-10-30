@@ -247,16 +247,23 @@ Deno.serve(async (req) => {
       }
       const uid = who.user.id;
       let runId: number | undefined; // this run's discover_runs row, left out of the daily count
-      const ddeps: DiscoverDeps = {
-        // most telling first: measured against how common each cuisine is in the shared Bay Area pool
-        topCuisines: async () => {
-          const [{ data }, { data: base }] = await Promise.all([
+      // the profile with the user's own edits, and how common each cuisine is (loaded once per run)
+      let tasteCache: Promise<{ cuisines: Record<string, { share: number }>; dishes: string[]; avoid: string[]; base: { cuisine: string; share: number; pool_size: number }[] }> | null = null;
+      const myTaste = () =>
+        (tasteCache ??= (async () => {
+          const [{ data }, { data: prefs }, { data: base }] = await Promise.all([
             admin.from('user_profiles').select('profile').eq('user_id', uid).maybeSingle(),
+            admin.from('user_prefs').select('kind, value').eq('user_id', uid),
             admin.from('cuisine_base').select('cuisine, share, pool_size'),
           ]);
           const prof = typeof data?.profile === 'string' ? JSON.parse(data.profile) : data?.profile;
-          const rows = (base ?? []) as { cuisine: string; share: number; pool_size: number }[];
-          return rankCuisines(prof?.cuisines ?? {}, rows, rows[0]?.pool_size ?? 0).map((r) => r.cuisine);
+          return { ...editedTaste(prof, (prefs ?? []) as Pref[]), base: (base ?? []) as { cuisine: string; share: number; pool_size: number }[] };
+        })());
+      const ddeps: DiscoverDeps = {
+        // most telling first: measured against how common each cuisine is in the shared Bay Area pool
+        topCuisines: async () => {
+          const t = await myTaste();
+          return rankCuisines(t.cuisines, t.base, t.base[0]?.pool_size ?? 0).map((r) => r.cuisine);
         },
         knownIds: async () => {
           const [p, f] = await Promise.all([
@@ -297,16 +304,13 @@ Deno.serve(async (req) => {
         // a few lines on the user's taste for the rerank: most telling cuisines, dishes, places they love,
         // suggestions they saved
         taste: async () => {
-          const [{ data }, { data: base }, fav, picked] = await Promise.all([
-            admin.from('user_profiles').select('profile').eq('user_id', uid).maybeSingle(),
-            admin.from('cuisine_base').select('cuisine, share, pool_size'),
+          const [t, fav, picked] = await Promise.all([
+            myTaste(),
             admin.from('places').select('title, google_name').eq('user_id', uid).eq('list_name', 'favorites').eq('is_food', true).is('removed_at', null).order('created_at', { ascending: false }).limit(25),
             admin.from('places').select('title, google_name').eq('user_id', uid).eq('added_via', 'pick').order('created_at', { ascending: false }).limit(10),
           ]);
-          const prof = typeof data?.profile === 'string' ? JSON.parse(data.profile) : data?.profile;
-          const rows = (base ?? []) as { cuisine: string; share: number; pool_size: number }[];
-          const cuisines = rankCuisines(prof?.cuisines ?? {}, rows, rows[0]?.pool_size ?? 0).slice(0, 8).map((r) => r.cuisine.replace(/_/g, ' '));
-          const dishes = Object.keys(prof?.dishes ?? {}).slice(0, 10);
+          const cuisines = rankCuisines(t.cuisines, t.base, t.base[0]?.pool_size ?? 0).slice(0, 8).map((r) => r.cuisine.replace(/_/g, ' '));
+          const dishes = t.dishes.slice(0, 10);
           const names = (r: { data: { title: string | null; google_name: string | null }[] | null }) =>
             (r.data ?? []).map((p) => p.google_name ?? p.title).filter(Boolean).join(', ');
           return [
@@ -314,6 +318,7 @@ Deno.serve(async (req) => {
             dishes.length ? `Dishes they mention: ${dishes.join(', ')}` : '',
             names(fav) ? `Some favorites: ${names(fav)}` : '',
             names(picked) ? `Suggestions they saved: ${names(picked)}` : '',
+            t.avoid.length ? `They avoid: ${t.avoid.join(', ')}` : '',
           ].filter(Boolean).join('\n');
         },
         // the reasons they gave for "Not interested" and "didn't like it", newest first, plus dislikes from onboarding
@@ -873,6 +878,26 @@ export function liftScore(share: number, base: number, maxShare: number, cap = 8
   const lift = share / base;
   const distinct = lift > 1 ? Math.max(0, Math.min(1, Math.log(lift) / Math.log(cap))) : 0;
   return 0.5 * distinct + 0.5 * Math.min(1, share / maxShare);
+}
+
+// the profile as the user has edited it ("Your taste" in the app): cuisines and dishes they hid come out,
+// ones they added count now (the weekly rebuild on the mini folds them in properly)
+export type Pref = { kind: string; value: string };
+const normC = (c: string) => c.trim().toLowerCase().replace(/-/g, ' ').replace(/ /g, '_');
+export function editedTaste(prof: { cuisines?: Record<string, { share?: number }>; dishes?: Record<string, number> } | null, prefs: Pref[]) {
+  const hideC = new Set(prefs.filter((p) => p.kind === 'not_cuisine').map((p) => normC(p.value)));
+  const hideD = new Set(prefs.filter((p) => p.kind === 'not_dish').map((p) => p.value.trim().toLowerCase()));
+  const cuisines: Record<string, { share: number }> = {};
+  for (const [c, v] of Object.entries(prof?.cuisines ?? {})) if (!hideC.has(c)) cuisines[c] = { share: v?.share ?? 0 };
+  const top = Math.max(0.05, ...Object.values(cuisines).map((v) => v.share));
+  for (const p of prefs) {
+    const c = normC(p.value);
+    if (p.kind === 'cuisine' && c && !hideC.has(c) && !(c in cuisines)) cuisines[c] = { share: top / 2 };
+  }
+  const dishes = [...new Set([...Object.keys(prof?.dishes ?? {}), ...prefs.filter((p) => p.kind === 'dish').map((p) => p.value.trim().toLowerCase())])]
+    .filter((d) => d && !hideD.has(d));
+  const avoid = prefs.filter((p) => p.kind.startsWith('dislike_')).map((p) => p.value);
+  return { cuisines, dishes, avoid };
 }
 
 // the user's cuisines, most telling first: saving a lot of Mexican in the Bay Area says less than saving Burmese

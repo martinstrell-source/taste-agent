@@ -414,3 +414,15 @@ Deno.test('rerank: Claude scores each place for this person with a specific reas
   const failed = await rerank(items, deps({ claudeText: async () => 'sorry' }).d, {});
   eq(failed.map((x) => [x.google_place_id, x.score, x.reason]), items.map((x) => [x.id, x.score, x.reason]));
 });
+
+Deno.test('edited taste: hidden cuisines and dishes come out, added ones count now, dislikes listed', async () => {
+  const { editedTaste } = await import('./discover.ts');
+  const t = editedTaste(
+    { cuisines: { mexican: { share: 0.2 }, pizza: { share: 0.1 } }, dishes: { 'al pastor': 3, 'khao soi': 2 } },
+    [{ kind: 'not_cuisine', value: 'pizza' }, { kind: 'cuisine', value: 'Burmese' }, { kind: 'not_dish', value: 'Al Pastor' }, { kind: 'dish', value: 'xiao long bao' }, { kind: 'dislike_other', value: 'American Chinese' }],
+  );
+  eq(Object.keys(t.cuisines), ['mexican', 'burmese']);
+  eq(t.cuisines.burmese.share, 0.1);
+  eq(t.dishes, ['khao soi', 'xiao long bao']);
+  eq(t.avoid, ['American Chinese']);
+});

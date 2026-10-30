@@ -13,7 +13,7 @@ import { capture, type Input, readBill, SYSTEM } from './core.ts';
 import { type GetInput, placeGet, placeSearch, type SearchInput } from './search.ts';
 import { type StarterInput, starterPlaces } from './starter.ts';
 import { makeHandle, placeRow, prefRows, screenshotList, type ShotInput, starterProfile, type TasteInput, tasteRead, type TasteSaveInput } from './onboard.ts';
-import { type AreaProfile, areaKey, type Box, type DiscoverDeps, type DiscoverInput, discoverGoogle, discoverWeb, rankCuisines, type Trace } from './discover.ts';
+import { type AreaProfile, areaKey, type Box, type DiscoverDeps, type DiscoverInput, discoverGoogle, discoverWeb, editedTaste, type Pref, rankCuisines, type Trace } from './discover.ts';
 
 const URL_ = Deno.env.get('SUPABASE_URL')!;
 const firstKey = (json: string | undefined) => {
@@ -249,16 +249,23 @@ Deno.serve(async (req) => {
       }
       const uid = who.user.id;
       let runId: number | undefined; // this run's discover_runs row, left out of the daily count
-      const ddeps: DiscoverDeps = {
-        // most telling first: measured against how common each cuisine is in the shared Bay Area pool
-        topCuisines: async () => {
-          const [{ data }, { data: base }] = await Promise.all([
+      // the profile with the user's own edits, and how common each cuisine is (loaded once per run)
+      let tasteCache: Promise<{ cuisines: Record<string, { share: number }>; dishes: string[]; avoid: string[]; base: { cuisine: string; share: number; pool_size: number }[] }> | null = null;
+      const myTaste = () =>
+        (tasteCache ??= (async () => {
+          const [{ data }, { data: prefs }, { data: base }] = await Promise.all([
             admin.from('user_profiles').select('profile').eq('user_id', uid).maybeSingle(),
+            admin.from('user_prefs').select('kind, value').eq('user_id', uid),
             admin.from('cuisine_base').select('cuisine, share, pool_size'),
           ]);
           const prof = typeof data?.profile === 'string' ? JSON.parse(data.profile) : data?.profile;
-          const rows = (base ?? []) as { cuisine: string; share: number; pool_size: number }[];
-          return rankCuisines(prof?.cuisines ?? {}, rows, rows[0]?.pool_size ?? 0).map((r) => r.cuisine);
+          return { ...editedTaste(prof, (prefs ?? []) as Pref[]), base: (base ?? []) as { cuisine: string; share: number; pool_size: number }[] };
+        })());
+      const ddeps: DiscoverDeps = {
+        // most telling first: measured against how common each cuisine is in the shared Bay Area pool
+        topCuisines: async () => {
+          const t = await myTaste();
+          return rankCuisines(t.cuisines, t.base, t.base[0]?.pool_size ?? 0).map((r) => r.cuisine);
         },
         knownIds: async () => {
           const [p, f] = await Promise.all([
@@ -299,16 +306,13 @@ Deno.serve(async (req) => {
         // a few lines on the user's taste for the rerank: most telling cuisines, dishes, places they love,
         // suggestions they saved
         taste: async () => {
-          const [{ data }, { data: base }, fav, picked] = await Promise.all([
-            admin.from('user_profiles').select('profile').eq('user_id', uid).maybeSingle(),
-            admin.from('cuisine_base').select('cuisine, share, pool_size'),
+          const [t, fav, picked] = await Promise.all([
+            myTaste(),
             admin.from('places').select('title, google_name').eq('user_id', uid).eq('list_name', 'favorites').eq('is_food', true).is('removed_at', null).order('created_at', { ascending: false }).limit(25),
             admin.from('places').select('title, google_name').eq('user_id', uid).eq('added_via', 'pick').order('created_at', { ascending: false }).limit(10),
           ]);
-          const prof = typeof data?.profile === 'string' ? JSON.parse(data.profile) : data?.profile;
-          const rows = (base ?? []) as { cuisine: string; share: number; pool_size: number }[];
-          const cuisines = rankCuisines(prof?.cuisines ?? {}, rows, rows[0]?.pool_size ?? 0).slice(0, 8).map((r) => r.cuisine.replace(/_/g, ' '));
-          const dishes = Object.keys(prof?.dishes ?? {}).slice(0, 10);
+          const cuisines = rankCuisines(t.cuisines, t.base, t.base[0]?.pool_size ?? 0).slice(0, 8).map((r) => r.cuisine.replace(/_/g, ' '));
+          const dishes = t.dishes.slice(0, 10);
           const names = (r: { data: { title: string | null; google_name: string | null }[] | null }) =>
             (r.data ?? []).map((p) => p.google_name ?? p.title).filter(Boolean).join(', ');
           return [
@@ -316,6 +320,7 @@ Deno.serve(async (req) => {
             dishes.length ? `Dishes they mention: ${dishes.join(', ')}` : '',
             names(fav) ? `Some favorites: ${names(fav)}` : '',
             names(picked) ? `Suggestions they saved: ${names(picked)}` : '',
+            t.avoid.length ? `They avoid: ${t.avoid.join(', ')}` : '',
           ].filter(Boolean).join('\n');
         },
         // the reasons they gave for "Not interested" and "didn't like it", newest first, plus dislikes from onboarding
