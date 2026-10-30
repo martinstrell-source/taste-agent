@@ -724,7 +724,9 @@ export type Score = { google_place_id: string; score: number; reason: string };
 export type Trace = Record<string, unknown>;
 export type WebResult = { text: string; searches: number; queries?: string[]; pages?: { url: string; title: string }[] };
 export type Specialty = { name: string; query: string; tags: string[] };
-export type AreaProfile = { size?: string; local: Specialty[]; strengths: Specialty[] }; // size: major | mid | small
+export type Institution = { name: string; why: string };
+// size: major | mid | small; institutions: the places the city is known for (asked since Oct 30; older profiles are asked again once)
+export type AreaProfile = { size?: string; local: Specialty[]; strengths: Specialty[]; institutions?: Institution[]; area?: string };
 
 export type DiscoverDeps = {
   topCuisines: () => Promise<string[]>; // this user's, strongest first
@@ -828,9 +830,13 @@ export function areaPrompt(area: string): string {
    Leave it empty if nothing stands out. Do not list a category just because it is popular.
 3. Size: "major" for a big city with a deep food scene (Beijing, Tokyo, New York), "mid" for a regional city,
    "small" for a town or small city.
+4. Up to 8 institutions: restaurants, bakeries, cafes or bars this place is famous for that locals and local food
+   writers still consider essential (for New York: Katz's Delicatessen, Russ & Daughters). Skip tourist traps locals
+   avoid and chains. Only places you are confident are still open. For a small town, list fewer or none.
 Return only JSON, no other text:
 {"size": "major", "local": [{"name": "Peking roast duck", "query": "peking roast duck restaurant", "tags": ["peking duck", "roast duck", "beijing", "chinese"]}],
- "strengths": [{"name": "...", "query": "...", "tags": ["..."]}]}
+ "strengths": [{"name": "...", "query": "...", "tags": ["..."]}],
+ "institutions": [{"name": "Siji Minfu", "why": "a few words on what it is known for"}]}
 "query" is a short Google Maps search in English. "tags" are lowercase cuisine words a food app might use for these
 places (include the broad cuisine, like "chinese", and regional ones, like "uyghur" or "central asian").
 A tag must never name a different cuisine: Native American "Indian tacos" get "native american" and "frybread", not "indian".`;
@@ -851,7 +857,11 @@ export function parseAreaProfile(text: string): AreaProfile | null {
           tags: (Array.isArray(p.tags) ? p.tags : []).filter((t: unknown) => typeof t === 'string').map((t: string) => t.toLowerCase().trim()).filter(Boolean),
         }));
     const size = ['major', 'mid', 'small'].includes(d.size) ? d.size : undefined;
-    const p = { size, local: list(d.local, 6), strengths: list(d.strengths, 3) };
+    const institutions = (Array.isArray(d.institutions) ? d.institutions : [])
+      .filter((x: { name?: unknown }) => typeof x?.name === 'string' && x.name.trim())
+      .slice(0, 8)
+      .map((x: { name: string; why?: unknown }) => ({ name: x.name.trim(), why: String(x.why ?? '').trim().slice(0, 160) }));
+    const p = { size, local: list(d.local, 6), strengths: list(d.strengths, 3), institutions };
     return p.local.length ? p : null;
   } catch {
     return null;
@@ -877,13 +887,14 @@ export async function awayProfile(input: DiscoverInput, deps: DiscoverDeps, trac
   trace.away = true;
   const ck = cityKey(input.lat, input.lng);
   const have = await deps.getAreaProfile(ck);
-  if (have?.size) { // profiles saved before size was asked get asked again once
+  if (have?.size && Array.isArray(have.institutions)) { // profiles saved before size or institutions were asked get asked again once
     trace.city_profile = { city_key: ck, from: 'saved', ...have };
     return have;
   }
   const area = input.area_name || `the area around ${input.lat.toFixed(2)}, ${input.lng.toFixed(2)}`;
   const answer = await deps.claudeText(areaPrompt(area)).catch((e) => `error: ${(e as Error).message}`);
   const p = parseAreaProfile(answer);
+  if (p) p.area = area;
   trace.city_profile = p ? { city_key: ck, from: 'asked Claude', ...p } : { city_key: ck, from: 'asked Claude, could not read the answer', answer: answer.slice(0, 2000) };
   if (p) await deps.saveAreaProfile(ck, area, p).catch(() => {});
   return p;
@@ -944,6 +955,51 @@ function quality(rating: number | undefined, count: number | undefined): number 
   const k = 30;
   const c = count ?? 0;
   return ((rating * c + 4.2 * k) / (c + k) - 3.8) / 1.2; // about 0 to 1
+}
+
+// ---------- institutions: what a city is famous for ----------
+
+// each institution from the city profile, found on Google by name; kept if open, food and well liked.
+// Looked up once per area for 30 days (one feed item for all of them), then reused.
+export async function findInstitutions(away: AreaProfile, input: DiscoverInput, key: string, known: Set<string>, deps: DiscoverDeps, trace: Trace) {
+  const city = away.area ?? input.area_name ?? 'this city';
+  const itemId = `here:${key}:g:institutions`;
+  const out: { score: Score; info: { id: string; name: string; detail: string } }[] = [];
+  const rows: CandidateRow[] = [];
+  const t: { name: string; result: string }[] = [];
+  trace.institutions = t;
+  const reason = (why: string) => `A ${city} institution${why ? `: ${why}` : ''}`;
+  if ((await deps.cachedQueries(key, CACHE_DAYS)).has(itemId)) {
+    const prev = await deps.existingForArea(key, itemId);
+    prev.forEach((p, i) => {
+      if (known.has(p.google_place_id)) return void t.push({ name: p.name ?? '', result: 'already on your lists or rated' });
+      t.push({ name: p.name ?? '', result: 'kept (reused from the last 30 days)' });
+      const why = away.institutions?.find((x) => similar(x.name, p.name ?? ''))?.why ?? '';
+      out.push({ score: { google_place_id: p.google_place_id, score: 0.95 - i * 0.02, reason: reason(why) }, info: { id: p.google_place_id, name: p.name ?? '', detail: 'local institution' } });
+    });
+    return { item: null, searched: 0, rows, places: out };
+  }
+  // wider than the search radius: a city's institutions are spread around it
+  const box = boxAround(input.lat, input.lng, 15000);
+  await Promise.all(
+    (away.institutions ?? []).map(async (inst, i) => {
+      const res = await deps.googleSearch(`${inst.name} ${city}`, box, true).catch(() => [] as DPlace[]);
+      const g = res.find((r) => similar(inst.name, ((r.displayName as { text?: string } | undefined)?.text ?? '')));
+      const drop = (why: string) => void t.push({ name: inst.name, result: why });
+      if (!g?.id) return drop('not found on Google nearby');
+      const types = (g.types as string[] | undefined) ?? [];
+      const rating = (g.rating as number | undefined) ?? 0;
+      if ((g.businessStatus ?? 'OPERATIONAL') !== 'OPERATIONAL') return drop(`not open (${g.businessStatus})`);
+      if (!types.some((x) => FOOD_D.test(x))) return drop('not food');
+      if (rating && rating < 4.0) return drop(`rating ${rating}, under 4.0`);
+      const row = toRow(g, itemId, 'Known locally', `What ${city} is known for`, null, { what_it_says: inst.why ? `${inst.why}.` : '' });
+      if (row) rows.push(row);
+      if (known.has(g.id as string)) return drop('already on your lists or rated');
+      t.push({ name: inst.name, result: 'kept' });
+      out.push({ score: { google_place_id: g.id as string, score: Math.round((0.95 - i * 0.02) * 1000) / 1000, reason: reason(inst.why) }, info: { id: g.id as string, name: inst.name, detail: inst.why } });
+    }),
+  );
+  return { item: { item_id: itemId, source: 'Known locally', title: `What ${city} is known for`, link: null }, searched: away.institutions?.length ?? 0, rows, places: out };
 }
 
 // ---------- quick: Google ----------
@@ -1062,6 +1118,21 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
     }),
   );
 
+  // away from home: the places the city is famous for, looked up by name
+  if (away?.institutions?.length) {
+    const found = await findInstitutions(away, input, key, known, deps, trace);
+    if (found.item) {
+      items.push(found.item);
+      searched += found.searched;
+    }
+    rows.push(...found.rows);
+    for (const x of found.places) {
+      info.set(x.score.google_place_id, x.info);
+      const prev = scores.get(x.score.google_place_id);
+      if (!prev || x.score.score > prev.score) scores.set(x.score.google_place_id, x.score);
+    }
+  }
+
   const no = await screenDislikes([...info.values()].filter((p) => scores.has(p.id)), deps, trace);
   await deps.save(items, rows, [...scores.values()].filter((x) => !no.has(x.google_place_id)), key, 'google');
   trace.kind = 'google';
@@ -1084,7 +1155,8 @@ function webPromptBase(area: string, cuisines: string[], away?: AreaProfile | nu
 Their favorite cuisines: ${cuisines.map(nice).join(', ') || 'varied'}.
 Favor what ${area} is known for and does better than elsewhere: ${[...away.local, ...away.strengths].map((x) => x.name).join(', ')}.
 Their favorite cuisines count when they are also strong here. Include other non-local food only when the place is a
-standout that local food writers single out, or a local take on it. Skip chains and famous tourist standbys.
+standout that local food writers single out, or a local take on it. Include the institutions ${area} is famous for
+that locals still go to, and mark them "institution": true. Skip chains and tourist traps locals avoid.
 Use the local food press, local guides and recent reviews. Places must be open now.`;
   }
   return `Find restaurants, cafes, bakeries and bars in or near ${area} that a visitor with this taste would want to try.
@@ -1100,7 +1172,7 @@ Return up to 15 places. End your answer with a JSON array in a \`\`\`json block,
  "why": "one sentence in your own words on why it fits this person (no quotes from articles)",
  "source": "publication name", "source_title": "article title", "source_url": "..."}`;
 
-export function parseWeb(text: string): { name: string; city: string; cuisine: string; dishes: string[]; why: string; source: string; source_title: string; source_url: string }[] {
+export function parseWeb(text: string): { name: string; city: string; cuisine: string; dishes: string[]; why: string; source: string; source_title: string; source_url: string; institution: boolean }[] {
   const blocks = [...text.matchAll(/```json\s*([\s\S]*?)```/g)];
   try {
     const d = JSON.parse(blocks.length ? blocks[blocks.length - 1][1] : text);
@@ -1116,6 +1188,7 @@ export function parseWeb(text: string): { name: string; city: string; cuisine: s
         source: String(p.source ?? 'Web').trim(),
         source_title: String(p.source_title ?? '').trim(),
         source_url: String(p.source_url ?? '').trim(),
+        institution: p.institution === true,
       }));
   } catch {
     return [];
@@ -1191,8 +1264,11 @@ export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps, trac
       rows.push(row);
       const liked = !!f.cuisine && cuisines.some((c) => f.cuisine.includes(nice(c)) || nice(c).includes(f.cuisine));
       const local = !!away && [...away.local, ...away.strengths].some((sp) => (!!f.cuisine && matches(f.cuisine, sp)) || f.dishes.some((x) => matches(x, sp)));
-      const score = 0.75 - i * 0.01 + (liked ? 0.1 : 0) + (local ? 0.1 : 0);
-      const reason = liked && local ? `${cap(f.cuisine)}, one of yours and a local strength; from ${f.source}`
+      const famous = !!away && f.institution;
+      const score = 0.75 - i * 0.01 + (liked ? 0.1 : 0) + (local ? 0.1 : 0) + (famous ? 0.15 : 0);
+      const city = away?.area ?? input.area_name ?? 'local';
+      const reason = famous ? `A ${city} institution; from ${f.source}`
+        : liked && local ? `${cap(f.cuisine)}, one of yours and a local strength; from ${f.source}`
         : local ? `Local specialty; from ${f.source}`
         : liked ? `${cap(f.cuisine)}, a favorite of yours; from ${f.source}`
         : `From ${f.source}`;

@@ -146,7 +146,9 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
             {!!place.address && <Text style={styles.text}>{place.address}</Text>}
             {!!place.note && (
               <View style={styles.noteBox}>
-                <Text style={styles.noteLabel}>{place.kind === 'pick' ? 'What the article said' : 'Your note'}</Text>
+                <Text style={styles.noteLabel}>
+                  {place.kind !== 'pick' ? 'Your note' : mentions.some((m) => m.link?.startsWith('http')) ? 'What the article said' : 'About it'}
+                </Text>
                 <Text style={styles.text}>{place.note}</Text>
               </View>
             )}

@@ -294,3 +294,45 @@ Deno.test('noes: the web search is told what they turned down', async () => {
   ok(prompt.includes('"Golden Dragon: looks American Chinese"') && prompt.includes('Leave out places like those'));
   ok(prompt.trim().endsWith('"source_url": "..."}'));
 });
+
+Deno.test('away: the city profile names its institutions; each is found on Google by name and ranked near the top', async () => {
+  const asked: string[] = [];
+  let savedProfile: Record<string, unknown> | null = null;
+  const { d, saved } = deps({
+    home: async () => ({ lat: 37.8, lng: -122.27 }), // far from Philadelphia
+    getAreaProfile: async () => ({ size: 'major', local: [{ name: 'Cheesesteak', query: 'cheesesteak', tags: ['cheesesteak'] }], strengths: [] }), // older: no institutions
+    saveAreaProfile: async (_ck, _n, p) => void (savedProfile = p as unknown as Record<string, unknown>),
+    claudeText: async () => '{"size":"major","local":[{"name":"Cheesesteak","query":"cheesesteak","tags":["cheesesteak"]}],"strengths":[],"institutions":[{"name":"Zahav","why":"modern Israeli"},{"name":"Gone Diner","why":"old"},{"name":"Museum Cafe","why":"x"}]}',
+    googleSearch: async (q) => {
+      asked.push(q);
+      if (q.startsWith('Zahav')) return [P('Z1', 'Zahav', ['israeli_restaurant', 'restaurant'], 4.7, 6000)];
+      if (q.startsWith('Gone Diner')) return [P('G1', 'Gone Diner', ['diner'], 4.5, 900, 'CLOSED_PERMANENTLY')];
+      if (q.startsWith('Museum Cafe')) return [P('M1', 'Museum', ['museum'], 4.8, 9000)];
+      return [P('C1', 'Steak Spot', ['sandwich_shop', 'restaurant'], 4.5, 800)];
+    },
+  });
+  const trace: Record<string, unknown> = {};
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 39.95, lng: -75.16, area_name: 'Philadelphia' }, d, trace);
+  ok(asked.includes('Zahav Philadelphia'));
+  eq((savedProfile as unknown as { institutions: unknown[]; area: string }).area, 'Philadelphia');
+  const top = [...saved[0].scores].sort((a, b) => b.score - a.score)[0];
+  eq([top.google_place_id, top.reason], ['Z1', 'A Philadelphia institution: modern Israeli']);
+  ok(!saved[0].scores.some((x) => ['G1', 'M1'].includes(x.google_place_id)));
+  eq((trace.institutions as { name: string; result: string }[]).map((x) => x.result).sort(), ['kept', 'not food', 'not open (CLOSED_PERMANENTLY)']);
+  ok(saved[0].items.some((x) => (x as { item_id: string }).item_id.endsWith(':g:institutions')));
+});
+
+Deno.test('away: the web search is asked for institutions, and they rank higher', async () => {
+  let prompt = '';
+  const { d, saved } = deps({
+    home: async () => ({ lat: 37.8, lng: -122.27 }),
+    getAreaProfile: async () => ({ size: 'major', local: [{ name: 'Cheesesteak', query: 'cheesesteak', tags: ['cheesesteak'] }], strengths: [], institutions: [], area: 'Philadelphia' }),
+    claudeWeb: async (p) => ((prompt = p), { text: '```json\n[{"name":"Lardo","city":"Philadelphia","source":"Inquirer","source_url":"https://x.com/a"},{"name":"Zahav","city":"Philadelphia","institution":true,"source":"Inquirer","source_url":"https://x.com/b"}]\n```', searches: 2 }),
+    googleSearch: async (q) => (q.startsWith('Zahav') ? [P('Z1', 'Zahav', ['restaurant'])] : [P('W1', 'Lardo', ['restaurant'])]),
+  });
+  await discoverWeb({ type: 'discover', mode: 'web', lat: 39.95, lng: -75.16, area_name: 'Philadelphia' }, d);
+  ok(prompt.includes('institutions Philadelphia is famous for'));
+  const s = Object.fromEntries(saved[0].scores.map((x) => [x.google_place_id, x]));
+  ok(s.Z1.score > s.W1.score);
+  eq(s.Z1.reason, 'A Philadelphia institution; from Inquirer');
+});
