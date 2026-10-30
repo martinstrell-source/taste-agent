@@ -442,6 +442,8 @@ Deno.test('not a place to eat: caterers, butchers, delivery kitchens and groceri
   const { notAPlaceToEat } = await import('./discover.ts');
   eq(notAPlaceToEat({ primaryType: 'catering_service', types: ['catering_service', 'food'] }), 'catering service');
   eq(notAPlaceToEat({ types: ['butcher_shop', 'food_store'] }), 'butcher shop');
+  eq(notAPlaceToEat({ primaryType: 'gas_station', types: ['gas_station', 'coffee_shop', 'cafe'] }), 'gas station');
+  eq(notAPlaceToEat({ primaryType: 'mexican_restaurant', types: ['mexican_restaurant', 'gas_station'] }), null);
   eq(notAPlaceToEat({ primaryType: 'restaurant', types: ['restaurant', 'catering_service'] }), null); // a restaurant that also caters is fine
   const { d, saved } = deps({
     googleSearch: async () => [P('C1', 'Hasson Caterers', ['catering_service', 'food']), { ...P('R1', 'Real Spot', ['restaurant']), primaryType: 'restaurant' }],
