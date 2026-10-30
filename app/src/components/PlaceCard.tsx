@@ -141,7 +141,7 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
               </View>
             )}
 
-            {place.kind === 'pick' && !!place.why && <Text style={styles.why}>Why you: {place.why}</Text>}
+            {place.kind === 'pick' && !!place.why && <Text style={styles.why}>{place.why}</Text>}
             {!!categoryText(place) && <Text style={styles.muted}>{categoryText(place, 5)}</Text>}
             {!!place.address && <Text style={styles.text}>{place.address}</Text>}
             {!!place.note && (

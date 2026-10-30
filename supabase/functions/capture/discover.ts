@@ -338,8 +338,8 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
   if (!away) {
     const cuisines = all.slice(0, 5);
     queries = [
-      ...cuisines.map((c, i) => ({ c, q: `${nice(c)} restaurant`, label: `${nice(c)} near ${here}`, cuisine: c, base: 1 - i / 7, strict: false, reason: `${cap(nice(c))}, one of your top cuisines` })),
-      { c: 'best', q: 'best restaurants', label: 'Well rated nearby', cuisine: null, base: 0.35, strict: false, reason: 'Well rated nearby' },
+      ...cuisines.map((c, i) => ({ c, q: `${nice(c)} restaurant`, label: `${nice(c)} near ${here}`, cuisine: c, base: 1 - i / 7, strict: false, reason: `${cap(nice(c))}: one of the cuisines you save most` })),
+      { c: 'best', q: 'best restaurants', label: 'Well rated nearby', cuisine: null, base: 0.35, strict: false, reason: 'Well rated near you' },
     ];
   } else {
     const specials = [...away.local, ...away.strengths];
@@ -347,10 +347,10 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
     const other = all.slice(0, 5).find((c) => !yoursLocal.includes(c));
     queries = [
       ...away.local.slice(0, 5).map((sp, i) => ({ c: `local-${slug(sp.name)}`, q: sp.query, label: `${sp.name} in ${here}`, cuisine: sp.name.toLowerCase(), base: 1 - i / 12, strict: false, local: true, reason: `Local specialty: ${sp.name}` })),
-      ...yoursLocal.map((c) => ({ c, q: `${nice(c)} restaurant`, label: `${nice(c)} near ${here}`, cuisine: c, base: 1, strict: false, reason: `${cap(nice(c))}, one of yours and a local strength` })),
-      ...away.strengths.slice(0, 2).map((sp) => ({ c: `strength-${slug(sp.name)}`, q: sp.query, label: `${sp.name} in ${here}`, cuisine: sp.name.toLowerCase(), base: 0.8, strict: false, reason: `${sp.name}: something ${here} does especially well` })),
+      ...yoursLocal.map((c) => ({ c, q: `${nice(c)} restaurant`, label: `${nice(c)} near ${here}`, cuisine: c, base: 1, strict: false, reason: `${cap(nice(c))}: you save a lot of it, and ${input.area_name ?? 'this area'} does it especially well` })),
+      ...away.strengths.slice(0, 2).map((sp) => ({ c: `strength-${slug(sp.name)}`, q: sp.query, label: `${sp.name} in ${here}`, cuisine: sp.name.toLowerCase(), base: 0.8, strict: false, reason: `${sp.name}: something ${input.area_name ?? 'this area'} does especially well` })),
       // a non-local standout only in a major food city; a 4.6 rating means little in a small market
-      ...(other && away.size === 'major' ? [{ c: `${other}:standout`, q: `${nice(other)} restaurant`, label: `${nice(other)} near ${here}`, cuisine: other, base: 0.5, strict: true, reason: `${cap(nice(other))}, one of your top cuisines, and a standout here` }] : []),
+      ...(other && away.size === 'major' ? [{ c: `${other}:standout`, q: `${nice(other)} restaurant`, label: `${nice(other)} near ${here}`, cuisine: other, base: 0.5, strict: true, reason: `${cap(nice(other))}: one of the cuisines you save most, and a standout here` }] : []),
     ];
   }
   const known = await deps.knownIds();
@@ -587,10 +587,11 @@ export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps, trac
       const famous = !!away && f.institution;
       const score = 0.75 - i * 0.01 + (liked ? 0.1 : 0) + (local ? 0.1 : 0) + (famous ? 0.15 : 0);
       const city = away?.area ?? input.area_name ?? 'local';
-      const reason = famous ? `A ${city} institution; from ${f.source}`
-        : liked && local ? `${cap(f.cuisine)}, one of yours and a local strength; from ${f.source}`
-        : local ? `Local specialty; from ${f.source}`
-        : liked ? `${cap(f.cuisine)}, a favorite of yours; from ${f.source}`
+      const where = away?.area ?? input.area_name ?? 'this area';
+      const reason = famous ? `A ${city} institution. From ${f.source}`
+        : liked && local ? `${cap(f.cuisine)}: you save a lot of it, and ${where} does it especially well. From ${f.source}`
+        : local ? `Local specialty. From ${f.source}`
+        : liked ? `${cap(f.cuisine)}: one of the cuisines you save most. From ${f.source}`
         : `From ${f.source}`;
       scores.push({ google_place_id: row.google_place_id, score: Math.round(score * 1000) / 1000, reason });
       t.result = `kept (${Math.round(score * 100)}): ${reason}`;

@@ -49,7 +49,7 @@ Deno.test('google: top cuisines (not broad ones), skips saved, low-rated, closed
   const ids = saved[0].scores.map((s) => s.google_place_id).sort();
   eq(ids, ['B1', 'J1', 'U1']);
   ok(saved[0].rows.every((x) => !x.in_bay_area && x.item_id.startsWith('here:45.50,-122.70:g:')));
-  eq(saved[0].scores.find((s) => s.google_place_id === 'U1')?.reason, 'Uyghur or central asian, one of your top cuisines');
+  eq(saved[0].scores.find((s) => s.google_place_id === 'U1')?.reason, 'Uyghur or central asian: one of the cuisines you save most');
   eq(r.places, 3);
 });
 
@@ -130,7 +130,7 @@ Deno.test('away web: prompt names the specialties; local places get a boost and 
   });
   await discoverWeb({ type: 'discover', mode: 'web', lat: 39.9, lng: 116.4, area_name: 'Beijing' }, d);
   ok(prompt.includes('Peking roast duck') && prompt.includes('standout'));
-  eq(saved[0].scores[0].reason, 'Local specialty; from Time Out Beijing');
+  eq(saved[0].scores[0].reason, 'Local specialty. From Time Out Beijing');
 });
 
 Deno.test('matches and parseAreaProfile', () => {
@@ -334,5 +334,5 @@ Deno.test('away: the web search is asked for institutions, and they rank higher'
   ok(prompt.includes('institutions Philadelphia is famous for'));
   const s = Object.fromEntries(saved[0].scores.map((x) => [x.google_place_id, x]));
   ok(s.Z1.score > s.W1.score);
-  eq(s.Z1.reason, 'A Philadelphia institution; from Inquirer');
+  eq(s.Z1.reason, 'A Philadelphia institution. From Inquirer');
 });
