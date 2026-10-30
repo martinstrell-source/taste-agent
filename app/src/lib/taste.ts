@@ -68,9 +68,11 @@ export async function loadTaste(): Promise<Taste> {
   const cuisines = Object.entries(shares)
     .map(([c, s]) => ({ cuisine: c, label: cuisineLabel(c), score: lift(s, Math.max(0.002, base[c] ?? 0.01), max), added: addedC.has(c) }))
     .sort((a, b) => b.score - a.score)
-    .slice(0, 12);
+    // the top 12, plus anything the user added themselves (it may rank lower until the weekly rebuild)
+    .filter((c, i) => i < 12 || c.added);
 
-  const dishes = [...new Set([...Object.keys(p?.dishes ?? {}), ...addedD])]
+  // dishes the user added come first, so a new one shows right away (the list is cut at 15)
+  const dishes = [...new Set([...addedD, ...Object.keys(p?.dishes ?? {})])]
     .filter((d) => d && !hideD.has(d))
     .slice(0, 15)
     .map((d) => ({ dish: d, added: addedD.has(d) }));

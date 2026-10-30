@@ -423,6 +423,6 @@ Deno.test('edited taste: hidden cuisines and dishes come out, added ones count n
   );
   eq(Object.keys(t.cuisines), ['mexican', 'burmese']);
   eq(t.cuisines.burmese.share, 0.1);
-  eq(t.dishes, ['khao soi', 'xiao long bao']);
+  eq(t.dishes, ['xiao long bao', 'khao soi']);
   eq(t.avoid, ['American Chinese']);
 });

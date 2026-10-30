@@ -182,7 +182,8 @@ export function editedTaste(prof: { cuisines?: Record<string, { share?: number }
     const c = normC(p.value);
     if (p.kind === 'cuisine' && c && !hideC.has(c) && !(c in cuisines)) cuisines[c] = { share: top / 2 };
   }
-  const dishes = [...new Set([...Object.keys(prof?.dishes ?? {}), ...prefs.filter((p) => p.kind === 'dish').map((p) => p.value.trim().toLowerCase())])]
+  // dishes the user added first: the rerank sees only the first 10
+  const dishes = [...new Set([...prefs.filter((p) => p.kind === 'dish').map((p) => p.value.trim().toLowerCase()), ...Object.keys(prof?.dishes ?? {})])]
     .filter((d) => d && !hideD.has(d));
   const avoid = prefs.filter((p) => p.kind.startsWith('dislike_')).map((p) => p.value);
   return { cuisines, dishes, avoid };
