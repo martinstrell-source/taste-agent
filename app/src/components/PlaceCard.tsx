@@ -107,7 +107,7 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
         <View style={[styles.sheet, { paddingBottom: insets.bottom + 16, maxHeight: height * 0.75 }]}>
           <View style={styles.handle} />
           {asking ? (
-            <WhyNot name={place.name} onDone={(note) => onPick(place, 'not_interested', note)} />
+            <WhyNot name={place.name} onDone={(note) => onPick(place, 'not_interested', note)} onCancel={() => setAsking(false)} />
           ) : (
           <>
           <ScrollView contentContainerStyle={{ gap: 8 }}>

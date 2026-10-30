@@ -8,7 +8,8 @@ import { colors, radius } from '@/lib/theme';
 
 const REASONS = ['Not my kind of food', 'Looks touristy', 'Looks like a chain', 'Too pricey', 'Too far'];
 
-export default function WhyNot({ name, onDone }: { name: string; onDone: (note: string | null) => void }) {
+// Save marks it Not for me (with the reason, if any); Cancel goes back without marking it
+export default function WhyNot({ name, onDone, onCancel }: { name: string; onDone: (note: string | null) => void; onCancel: () => void }) {
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const [words, setWords] = useState('');
   const note = [...REASONS.filter((r) => chosen.has(r)), words.trim()].filter(Boolean).join('; ');
@@ -23,7 +24,7 @@ export default function WhyNot({ name, onDone }: { name: string; onDone: (note: 
   return (
     <View style={styles.wrap}>
       <Text style={styles.title}>Why not {name}?</Text>
-      <Text style={styles.hint}>Optional. Suggestions will leave out places like this.</Text>
+      <Text style={styles.hint}>A reason is optional. Suggestions will leave out places like this.</Text>
       <View style={styles.chips}>
         {REASONS.map((r) => (
           <Chip key={r} label={r} on={chosen.has(r)} onPress={() => toggle(r)} />
@@ -39,8 +40,8 @@ export default function WhyNot({ name, onDone }: { name: string; onDone: (note: 
         onSubmitEditing={() => onDone(note || null)}
       />
       <View style={styles.row}>
-        <Button title="Skip" kind="secondary" style={{ flex: 1 }} onPress={() => onDone(null)} />
-        <Button title="Save" style={{ flex: 2 }} disabled={!note} onPress={() => onDone(note)} />
+        <Button title="Cancel" kind="secondary" style={{ flex: 1 }} onPress={onCancel} />
+        <Button title="Save" style={{ flex: 2 }} onPress={() => onDone(note || null)} />
       </View>
     </View>
   );
