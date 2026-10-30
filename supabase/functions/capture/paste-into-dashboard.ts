@@ -886,10 +886,17 @@ export function liftScore(share: number, base: number, maxShare: number, cap = 8
 // the profile as the user has edited it ("Your taste" in the app): cuisines and dishes they hid come out,
 // ones they added count now (the weekly rebuild on the mini folds them in properly)
 export type Pref = { kind: string; value: string };
+// "burritos" and "burrito" are one dish: compare on the singular of the last word (same as the app)
+export function dishKey(d: string): string {
+  const w = d.trim().toLowerCase().replace(/\s+/g, ' ');
+  if (/(ches|shes|xes|zes|sses)$/.test(w)) return w.slice(0, -2);
+  if (/[^s]s$/.test(w)) return w.slice(0, -1);
+  return w;
+}
 const normC = (c: string) => c.trim().toLowerCase().replace(/-/g, ' ').replace(/ /g, '_');
 export function editedTaste(prof: { cuisines?: Record<string, { share?: number }>; dishes?: Record<string, number> } | null, prefs: Pref[]) {
   const hideC = new Set(prefs.filter((p) => p.kind === 'not_cuisine').map((p) => normC(p.value)));
-  const hideD = new Set(prefs.filter((p) => p.kind === 'not_dish').map((p) => p.value.trim().toLowerCase()));
+  const hideD = new Set(prefs.filter((p) => p.kind === 'not_dish').map((p) => dishKey(p.value)));
   const cuisines: Record<string, { share: number }> = {};
   for (const [c, v] of Object.entries(prof?.cuisines ?? {})) if (!hideC.has(c)) cuisines[c] = { share: v?.share ?? 0 };
   const top = Math.max(0.05, ...Object.values(cuisines).map((v) => v.share));
@@ -898,8 +905,14 @@ export function editedTaste(prof: { cuisines?: Record<string, { share?: number }
     if (p.kind === 'cuisine' && c && !hideC.has(c) && !(c in cuisines)) cuisines[c] = { share: top / 2 };
   }
   // dishes the user added first: the rerank sees only the first 10
-  const dishes = [...new Set([...prefs.filter((p) => p.kind === 'dish').map((p) => p.value.trim().toLowerCase()), ...Object.keys(prof?.dishes ?? {})])]
-    .filter((d) => d && !hideD.has(d));
+  const seen = new Set<string>();
+  const dishes = [...prefs.filter((p) => p.kind === 'dish').map((p) => p.value.trim().toLowerCase()), ...Object.keys(prof?.dishes ?? {})]
+    .filter((d) => {
+      const k = dishKey(d);
+      if (!d || hideD.has(k) || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
   const avoid = prefs.filter((p) => p.kind.startsWith('dislike_')).map((p) => p.value);
   const vibes = prefs.filter((p) => p.kind === 'vibe').map((p) => p.value);
   return { cuisines, dishes, avoid, vibes };

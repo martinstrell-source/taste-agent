@@ -20,6 +20,7 @@ Writes the profile to the user_profiles table in Supabase and prints a summary.
 """
 import argparse
 import json
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -98,6 +99,16 @@ def norm_cuisine(c):
     c = (c or "").strip().lower().replace("-", " ")
     c = CUISINE_ALIAS.get(c, c)
     return c.replace(" ", "_") if c else ""
+
+
+def dish_key(d):
+    """'burritos' and 'burrito' are one dish (same rule as the app and Discover)."""
+    w = re.sub(r"\s+", " ", (d or "").strip().lower())
+    if re.search(r"(ches|shes|xes|zes|sses)$", w):
+        return w[:-2]
+    if re.search(r"[^s]s$", w):
+        return w[:-1]
+    return w
 
 
 def region(lat, lng):
@@ -240,11 +251,19 @@ def main():
 
     # edits from the app's "Your taste" screen: things the user said aren't them come out
     hidden_cuisines = {norm_cuisine(v) for k, v in prefs if k == "not_cuisine"}
-    hidden_dishes = {v.strip().lower() for k, v in prefs if k == "not_dish"}
+    hidden_dishes = {dish_key(v) for k, v in prefs if k == "not_dish"}
     for c in hidden_cuisines:
         cuisines.pop(c, None)
-    for d in hidden_dishes:
-        dishes.pop(d, None)
+    for d in [d for d in dishes if dish_key(d) in hidden_dishes]:
+        del dishes[d]
+    # one entry per dish: "burritos" and "burrito" add up under the form used more
+    merged = Counter()
+    form = {}
+    for d, c in dishes.most_common():
+        k = dish_key(d)
+        form.setdefault(k, d)
+        merged[form[k]] += c
+    dishes = merged
 
     n = n or 1  # empty profile (nothing enriched yet) still writes a valid file
     top_source = max(sources.values()) if sources else 1

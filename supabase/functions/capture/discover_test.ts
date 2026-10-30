@@ -418,12 +418,12 @@ Deno.test('rerank: Claude scores each place for this person with a specific reas
 Deno.test('edited taste: hidden cuisines and dishes come out, added ones count now, dislikes listed', async () => {
   const { editedTaste } = await import('./discover.ts');
   const t = editedTaste(
-    { cuisines: { mexican: { share: 0.2 }, pizza: { share: 0.1 } }, dishes: { 'al pastor': 3, 'khao soi': 2 } },
-    [{ kind: 'not_cuisine', value: 'pizza' }, { kind: 'cuisine', value: 'Burmese' }, { kind: 'not_dish', value: 'Al Pastor' }, { kind: 'dish', value: 'xiao long bao' }, { kind: 'dislike_other', value: 'American Chinese' }],
+    { cuisines: { mexican: { share: 0.2 }, pizza: { share: 0.1 } }, dishes: { 'al pastor': 3, 'khao soi': 2, burritos: 2, burrito: 1, tacos: 1 } },
+    [{ kind: 'not_cuisine', value: 'pizza' }, { kind: 'cuisine', value: 'Burmese' }, { kind: 'not_dish', value: 'Al Pastor' }, { kind: 'dish', value: 'xiao long bao' }, { kind: 'dislike_other', value: 'American Chinese' }, { kind: 'not_dish', value: 'taco' }],
   );
   eq(Object.keys(t.cuisines), ['mexican', 'burmese']);
   eq(t.cuisines.burmese.share, 0.1);
-  eq(t.dishes, ['xiao long bao', 'khao soi']);
+  eq(t.dishes, ['xiao long bao', 'khao soi', 'burritos']); // one burrito; tacos hidden by 'taco'
   eq(t.avoid, ['American Chinese']);
 });
 

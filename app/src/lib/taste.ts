@@ -18,6 +18,14 @@ export type Taste = {
   placesCounted: number;
 };
 
+// "burritos" and "burrito" are one dish: compare on the singular of the last word
+export function dishKey(d: string): string {
+  const w = d.trim().toLowerCase().replace(/\s+/g, ' ');
+  if (/(ches|shes|xes|zes|sses)$/.test(w)) return w.slice(0, -2);
+  if (/[^s]s$/.test(w)) return w.slice(0, -1);
+  return w;
+}
+
 const normC = (c: string) => c.trim().toLowerCase().replace(/-/g, ' ').replace(/ /g, '_');
 export const cuisineLabel = (c: string) => {
   const s = c.replace(/_/g, ' ').replace(/\//g, ' / ');
@@ -54,7 +62,7 @@ export async function loadTaste(): Promise<Taste> {
   const prefs = (prefsR.data ?? []) as Pref[];
   const has = (kind: string) => new Set(prefs.filter((x) => x.kind === kind).map((x) => (kind.endsWith('cuisine') ? normC(x.value) : x.value.trim().toLowerCase())));
   const hideC = has('not_cuisine');
-  const hideD = has('not_dish');
+  const hideD = new Set([...has('not_dish')].map(dishKey));
   const addedC = has('cuisine');
   const addedD = has('dish');
 
@@ -69,14 +77,25 @@ export async function loadTaste(): Promise<Taste> {
   const cuisines = Object.entries(shares)
     .map(([c, s]) => ({ cuisine: c, label: cuisineLabel(c), score: lift(s, Math.max(0.002, base[c] ?? 0.01), max), added: addedC.has(c) }))
     .sort((a, b) => b.score - a.score)
-    // the top 12, plus anything the user added themselves (it may rank lower until the weekly rebuild)
-    .filter((c, i) => i < 12 || c.added);
+    ;
 
-  // dishes the user added come first, so a new one shows right away (the list is cut at 15)
-  const dishes = [...new Set([...addedD, ...Object.keys(p?.dishes ?? {})])]
-    .filter((d) => d && !hideD.has(d))
-    .slice(0, 15)
-    .map((d) => ({ dish: d, added: addedD.has(d) }));
+  // every dish, the user's own additions first; one entry per dish ("burrito" and "burritos" are one),
+  // shown in the form that came up more often
+  const counts = (p?.dishes ?? {}) as Record<string, number>;
+  const byKey = new Map<string, { dish: string; n: number; added: boolean }>();
+  for (const d of [...addedD, ...Object.keys(counts)]) {
+    const k = dishKey(d);
+    if (!k || hideD.has(k)) continue;
+    const n = counts[d] ?? Infinity; // added ones lead
+    const cur = byKey.get(k);
+    if (!cur) byKey.set(k, { dish: d, n, added: addedD.has(d) });
+    else {
+      if (n > cur.n && !cur.added) cur.dish = d;
+      cur.n = Math.max(cur.n, n);
+      cur.added ||= addedD.has(d);
+    }
+  }
+  const dishes = [...byKey.values()].sort((a, b) => b.n - a.n).map(({ dish, added }) => ({ dish, added }));
 
   return {
     cuisines,
@@ -116,7 +135,7 @@ export async function addCuisine(c: string) {
 
 export async function hideDish(d: string) {
   await removePref(['dish'], d);
-  await addPref('not_dish', d.toLowerCase());
+  await addPref('not_dish', dishKey(d)); // hides "burrito" and "burritos" alike
 }
 export const unhideDish = (d: string) => removePref(['not_dish'], d);
 export async function addDish(d: string) {
