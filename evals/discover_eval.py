@@ -278,8 +278,9 @@ def check(picks, known, chains, not_place, reviews_only):
             flags.append(f"not a place to eat ({t.replace('_', ' ')})")
         if (p["status"] or "OPERATIONAL") != "OPERATIONAL":
             flags.append(f"not open ({p['status']})")
-        # the rating bar is for places found by Google search; an article or a city's institutions outweigh it
-        if (p["source"] == "Google Maps search" and p["rating"] and (p["reviews"] or 0) >= 20 and p["rating"] < 4.3
+        # the rating bar is for places found by Google search; an article or a city's institutions outweigh it.
+        # Discover keeps 4.3 and up; a place that has slipped to 4.2 since is fine (Martin, Oct 30)
+        if (p["source"] == "Google Maps search" and p["rating"] and (p["reviews"] or 0) >= 20 and p["rating"] < 4.2
                 and not re.search(r"institution|specialty", p["why"] or "", re.I)):
             flags.append(f"rated {p['rating']}")
         if p["gid"] in known:
