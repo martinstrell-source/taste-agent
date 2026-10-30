@@ -20,7 +20,8 @@ export async function pickMentions(googleId: string): Promise<Mention[]> {
   const seen = new Set<string>();
   return (data ?? [])
     .filter((r) => {
-      const k = r.item_link ?? r.item_title ?? '';
+      // one line per article; Google searches (several queries can find the same place) count once
+      const k = r.source === 'Google Maps search' || r.source === 'Known locally' ? r.source : (r.item_link ?? r.item_title ?? '');
       if (seen.has(k)) return false;
       seen.add(k);
       return true;
