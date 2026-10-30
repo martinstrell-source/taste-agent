@@ -449,3 +449,9 @@ Deno.test('not a place to eat: caterers, butchers, delivery kitchens and groceri
   await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, d);
   ok(!saved[0].scores.some((x) => x.google_place_id === 'C1') && saved[0].scores.some((x) => x.google_place_id === 'R1'));
 });
+
+Deno.test('reasons say you, not they', async () => {
+  const { toYou } = await import('./discover.ts');
+  eq(toYou('Coffee shop, and they like coffee cafes'), 'Coffee shop, and you like coffee cafes');
+  eq(toYou("They saved Xi'an Famous; their kind of noodles"), "You saved Xi'an Famous; your kind of noodles");
+});

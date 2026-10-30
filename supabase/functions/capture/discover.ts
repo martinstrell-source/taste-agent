@@ -118,6 +118,15 @@ For every place:
 Answer with only a JSON array, one object per place: [{"n": 1, "fit": 72, "why": "...", "chain": false${dislikes.length ? ', "no": false' : ''}}]`;
 }
 
+// reasons are written to the user: if Claude still says "they", turn it into "you"
+export function toYou(s: string): string {
+  return s
+    .replace(/\bthey're\b/gi, "you're").replace(/\bthey've\b/gi, "you've").replace(/\bthey'd\b/gi, "you'd")
+    .replace(/\bthemselves\b/gi, 'yourself').replace(/\btheir\b/gi, 'your').replace(/\bthem\b/gi, 'you')
+    .replace(/\bthey\b/gi, 'you')
+    .replace(/^you/, 'You').replace(/^your/, 'Your');
+}
+
 export async function rerank(items: RerankItem[], deps: DiscoverDeps, trace: Trace): Promise<Score[]> {
   const keep = (xs: RerankItem[]) => xs.map((x) => ({ google_place_id: x.id, score: x.score, reason: x.reason }));
   if (!items.length) return [];
@@ -146,7 +155,7 @@ export async function rerank(items: RerankItem[], deps: DiscoverDeps, trace: Tra
     if (x?.chain === true) return void chains.push(p.name);
     if (dislikes.length && x?.no === true) return void noes.push({ name: p.name, why: String(x?.why ?? '') });
     const fit = typeof x?.fit === 'number' ? Math.max(0, Math.min(100, x.fit)) : null;
-    const why = String(x?.why ?? '').trim().slice(0, 140);
+    const why = toYou(String(x?.why ?? '').trim().slice(0, 140));
     // Discover's own score still counts (local specialties, quality); the fit for this person counts more.
     // A city's institutions keep their label ("A Boston institution: ...").
     const score = fit === null ? p.score : Math.round((0.3 * p.score + 0.7 * (fit / 100)) * 1000) / 1000;
