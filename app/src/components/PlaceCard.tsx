@@ -157,7 +157,6 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
                   {m.source === 'Google Maps search' ? 'Found by a Google search for new places' : m.source}
                   {m.published && m.source !== 'Google Maps search' ? ` · ${shortDate(m.published)}` : ''}
                 </Text>
-                {!!m.title && m.source !== 'Google Maps search' && <Text style={styles.muted}>{m.title}</Text>}
                 {!!m.link && m.link.startsWith('http') && m.source !== 'Google Maps search' && (
                   <Pressable onPress={() => Linking.openURL(m.link as string)} hitSlop={6}>
                     <Text style={styles.link}>Read the article</Text>
@@ -165,7 +164,8 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
                 )}
               </View>
             ))}
-            {place.kind === 'pick' && !!place.why && <Text style={styles.why}>{place.why}</Text>}
+            {/* a reason that only names the source repeats the line above */}
+            {place.kind === 'pick' && !!place.why && !/^From /.test(place.why) && <Text style={styles.why}>{place.why}</Text>}
             {!!source && <Text style={styles.source}>{source}</Text>}
             {visits.length > 0 && <Text style={styles.noteLabel}>Your visits</Text>}
             {visits.map((v) => (
