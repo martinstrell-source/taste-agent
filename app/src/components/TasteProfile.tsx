@@ -6,8 +6,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Icon, SheetHeader } from '@/components/ui';
 import {
-  addAvoid, addCuisine, addDish, cuisineLabel, forgetReason, hideCuisine, hideDish, loadTaste, removeAvoid,
-  unhideCuisine, unhideDish, type Taste,
+  addAvoid, addCuisine, addDish, addVibe, cuisineLabel, forgetReason, hideCuisine, hideDish, loadTaste, removeAvoid,
+  removeVibe, unhideCuisine, unhideDish, VIBE_IDEAS, type Taste,
 } from '@/lib/taste';
 import { colors, radius } from '@/lib/theme';
 
@@ -70,6 +70,21 @@ export default function TasteProfile({ visible, onClose }: { visible: boolean; o
                 {taste.dishes.length === 0 && <Text style={styles.muted}>None yet.</Text>}
                 <AddField placeholder="Add a dish, e.g. khao soi" onAdd={(v) => act(() => addDish(v))()} />
                 <Hidden items={taste.hiddenDishes.map((d) => ({ key: d, label: d }))} onRestore={(k) => act(() => unhideDish(k))()} />
+              </Section>
+
+              <Section title="Places you like" hint="The feel of a place, not the food. Tap an idea or write your own.">
+                <Tags items={taste.vibes.map((v) => ({ key: v, label: v }))} onRemove={(k) => act(() => removeVibe(k))()} />
+                <View style={styles.tags}>
+                  {VIBE_IDEAS.filter((v) => !taste.vibes.some((x) => x.toLowerCase() === v.toLowerCase())).map((v) => (
+                    <Pressable key={v} onPress={act(() => addVibe(v))} style={styles.idea} accessibilityLabel={`Add ${v}`}>
+                      <Icon name="plus" color={colors.muted} size={11} />
+                      <Text style={styles.ideaText} maxFontSizeMultiplier={1}>
+                        {v}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+                <AddField placeholder="e.g. quirky, a little odd" onAdd={(v) => act(() => addVibe(v))()} />
               </Section>
 
               <Section title="You avoid" hint="Discover leaves out places like these.">
@@ -187,6 +202,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line,
   },
   tagText: { fontSize: 14, fontWeight: '600', color: colors.text },
+  idea: {
+    flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 12, height: 32, borderRadius: radius.pill,
+    borderWidth: 1, borderStyle: 'dashed', borderColor: colors.muted,
+  },
+  ideaText: { fontSize: 14, color: colors.muted, fontWeight: '600' },
   hidden: { fontSize: 14, color: colors.muted, lineHeight: 20 },
   restore: { color: colors.text, fontWeight: '600', textDecorationLine: 'underline' },
   addRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },

@@ -63,6 +63,7 @@ export type DiscoverDeps = {
   saveAreaProfile: (cityKey: string, areaName: string, p: AreaProfile) => Promise<void>;
   claudeText: (prompt: string) => Promise<string>; // no web search: fast
   dislikes?: () => Promise<string[]>; // what this user said no to, in their words ("Golden Dragon: looks American Chinese")
+  vibes?: () => Promise<string[]>; // kinds of places they like ("hole in the wall", "rooftop"), from "Your taste"
   taste?: () => Promise<string>; // a few lines on the user's taste for the rerank (cuisines, dishes, places they love)
 };
 
@@ -186,7 +187,8 @@ export function editedTaste(prof: { cuisines?: Record<string, { share?: number }
   const dishes = [...new Set([...prefs.filter((p) => p.kind === 'dish').map((p) => p.value.trim().toLowerCase()), ...Object.keys(prof?.dishes ?? {})])]
     .filter((d) => d && !hideD.has(d));
   const avoid = prefs.filter((p) => p.kind.startsWith('dislike_')).map((p) => p.value);
-  return { cuisines, dishes, avoid };
+  const vibes = prefs.filter((p) => p.kind === 'vibe').map((p) => p.value);
+  return { cuisines, dishes, avoid, vibes };
 }
 
 // the user's cuisines, most telling first: saving a lot of Mexican in the Bay Area says less than saving Burmese
@@ -558,11 +560,14 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
 
 // ---------- slow: the web ----------
 
-export function webPrompt(area: string, cuisines: string[], away?: AreaProfile | null, dislikes: string[] = []): string {
+export function webPrompt(area: string, cuisines: string[], away?: AreaProfile | null, dislikes: string[] = [], vibes: string[] = []): string {
   const noes = dislikes.length
     ? `\nWhen they turned places down, they said: ${dislikes.slice(0, 15).map((d) => `"${d}"`).join('; ')}. Leave out places like those.`
     : '';
-  return webPromptBase(area, cuisines, away) + noes + WEB_FORMAT;
+  const likes = vibes.length
+    ? `\nThe kinds of places they like: ${vibes.slice(0, 12).join(', ')}. Favor places like that when food writers or reviews describe them that way.`
+    : '';
+  return webPromptBase(area, cuisines, away) + likes + noes + WEB_FORMAT;
 }
 
 function webPromptBase(area: string, cuisines: string[], away?: AreaProfile | null): string {
@@ -645,7 +650,8 @@ export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps, trac
   }
 
   const dislikes = (await deps.dislikes?.().catch(() => [])) ?? [];
-  const prompt = webPrompt(input.area_name || `the area around ${input.lat.toFixed(3)}, ${input.lng.toFixed(3)}`, cuisines, away, dislikes);
+  const vibes = (await deps.vibes?.().catch(() => [])) ?? [];
+  const prompt = webPrompt(input.area_name || `the area around ${input.lat.toFixed(3)}, ${input.lng.toFixed(3)}`, cuisines, away, dislikes, vibes);
   trace.kind = 'web'; // counts toward the daily limit even if a later step fails
   trace.prompt = prompt;
   const { text, searches, queries, pages } = await deps.claudeWeb(prompt);

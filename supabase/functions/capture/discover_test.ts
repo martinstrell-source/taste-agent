@@ -426,3 +426,14 @@ Deno.test('edited taste: hidden cuisines and dishes come out, added ones count n
   eq(t.dishes, ['xiao long bao', 'khao soi']);
   eq(t.avoid, ['American Chinese']);
 });
+
+Deno.test('vibes: kinds of places they like go to the food-press search', async () => {
+  let prompt = '';
+  const { d } = deps({
+    vibes: async () => ['hole in the wall', 'rooftop'],
+    claudeWeb: async (p) => ((prompt = p), { text: '[]', searches: 1 }),
+  });
+  await discoverWeb({ type: 'discover', mode: 'web', lat: 45.52, lng: -122.68, area_name: 'Portland' }, d);
+  ok(prompt.includes('The kinds of places they like: hole in the wall, rooftop.'));
+  ok(prompt.trim().endsWith('"source_url": "..."}'));
+});

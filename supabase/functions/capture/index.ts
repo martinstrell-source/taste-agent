@@ -250,7 +250,7 @@ Deno.serve(async (req) => {
       const uid = who.user.id;
       let runId: number | undefined; // this run's discover_runs row, left out of the daily count
       // the profile with the user's own edits, and how common each cuisine is (loaded once per run)
-      let tasteCache: Promise<{ cuisines: Record<string, { share: number }>; dishes: string[]; avoid: string[]; base: { cuisine: string; share: number; pool_size: number }[] }> | null = null;
+      let tasteCache: Promise<{ cuisines: Record<string, { share: number }>; dishes: string[]; avoid: string[]; vibes: string[]; base: { cuisine: string; share: number; pool_size: number }[] }> | null = null;
       const myTaste = () =>
         (tasteCache ??= (async () => {
           const [{ data }, { data: prefs }, { data: base }] = await Promise.all([
@@ -305,6 +305,7 @@ Deno.serve(async (req) => {
         claudeText: (prompt) => claude([{ type: 'text', text: prompt }], true),
         // a few lines on the user's taste for the rerank: most telling cuisines, dishes, places they love,
         // suggestions they saved
+        vibes: async () => (await myTaste()).vibes,
         taste: async () => {
           const [t, fav, picked] = await Promise.all([
             myTaste(),
@@ -320,6 +321,7 @@ Deno.serve(async (req) => {
             dishes.length ? `Dishes they mention: ${dishes.join(', ')}` : '',
             names(fav) ? `Some favorites: ${names(fav)}` : '',
             names(picked) ? `Suggestions they saved: ${names(picked)}` : '',
+            t.vibes.length ? `Kinds of places they like: ${t.vibes.join(', ')}` : '',
             t.avoid.length ? `They avoid: ${t.avoid.join(', ')}` : '',
           ].filter(Boolean).join('\n');
         },

@@ -13,6 +13,7 @@ export type Taste = {
   dishes: { dish: string; added: boolean }[];
   hiddenDishes: string[];
   avoid: string[];
+  vibes: string[]; // kinds of places they like: hole in the wall, rooftop
   noes: { google_place_id: string; name: string | null; note: string }[];
   placesCounted: number;
 };
@@ -83,6 +84,7 @@ export async function loadTaste(): Promise<Taste> {
     dishes,
     hiddenDishes: [...hideD],
     avoid: prefs.filter((x) => x.kind.startsWith('dislike_')).map((x) => x.value),
+    vibes: prefs.filter((x) => x.kind === 'vibe').map((x) => x.value),
     noes: ((noesR.data ?? []) as { google_place_id: string; name: string | null; note: string }[]).filter((n) => n.note?.trim()),
     placesCounted: Math.round(p?.n_food_places ?? 0),
   };
@@ -121,6 +123,11 @@ export async function addDish(d: string) {
   await removePref(['not_dish'], d);
   await addPref('dish', d.toLowerCase());
 }
+
+// the kinds of places they like (setting and feel, not food)
+export const VIBE_IDEAS = ['Hole in the wall', 'Easy to miss', 'Rooftop', 'Outdoor patio', 'Counter seating', 'Lively', 'Quiet', 'Old-school', 'Natural wine bar'];
+export const addVibe = (text: string) => addPref('vibe', text);
+export const removeVibe = (text: string) => removePref(['vibe'], text);
 
 export const addAvoid = (text: string) => addPref('dislike_other', text);
 export const removeAvoid = (text: string) => removePref(['dislike_other', 'dislike_cuisine', 'dislike_dish', 'dislike_format'], text);
