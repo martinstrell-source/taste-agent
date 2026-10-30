@@ -1,10 +1,13 @@
 import type { NearbyPlace } from './supabase';
 
+// miles and feet (US users); radius labels come out as "½ mi", "2 mi", "6 mi"
+export const MILE = 1609.344;
 export function formatDistance(m: number): string {
-  if (m < 1000) return `${Math.round(m / 10) * 10} m`;
-  const km = m / 1000;
-  // whole numbers without ".0" (radius labels: 1 km, 3 km); one decimal under 10 km otherwise
-  return Number.isInteger(km) || km >= 10 ? `${Math.round(km)} km` : `${km.toFixed(1)} km`;
+  const mi = m / MILE;
+  if (mi < 0.1) return `${Math.max(50, Math.round((m * 3.28084) / 50) * 50)} ft`;
+  if (Math.abs(mi - 0.5) < 0.01) return '½ mi';
+  if (Math.abs(mi - Math.round(mi)) < 0.01 || mi >= 10) return `${Math.round(mi)} mi`;
+  return `${mi.toFixed(1)} mi`;
 }
 
 const LIST_LABELS: Record<string, string> = {

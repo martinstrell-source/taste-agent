@@ -3,7 +3,7 @@ import { supabase, type NearbyPlace } from './supabase';
 // Search bar: your own saved places by name (instant, from the database) and restaurants from Google
 // (through the capture function, so the key stays on the server).
 
-export type GoogleHit = { google_place_id: string; name: string; detail: string };
+export type GoogleHit = { google_place_id: string; name: string; detail: string; landmark?: boolean }; // landmark: not food, a place to go to
 type Near = { lat: number; lng: number } | null | undefined;
 
 export async function searchSaves(q: string, near: Near): Promise<NearbyPlace[]> {

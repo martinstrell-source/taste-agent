@@ -29,6 +29,7 @@ import {
   categoryText,
   deltaForRadius,
   formatDistance,
+  MILE,
   GROUP_LABEL,
   groupOf,
   kindOf,
@@ -52,7 +53,11 @@ import { isOpenNow } from '@/lib/hours';
 import { fetchNearby, fetchPlaceDetails, supabase, type NearbyPlace, type PlaceDetails } from '@/lib/supabase';
 import { colors, groupColor, radius as corner } from '@/lib/theme';
 
-const RADII = [1000, 3000, 10000];
+// ½, 2 and 6 miles
+const NEAR = 0.5 * MILE;
+const MID = 2 * MILE;
+const WIDE = 6 * MILE;
+const RADII = [NEAR, MID, WIDE];
 const GROUPS: Group[] = ['favorites', 'want_to_go', 'other', 'pick'];
 const KINDS: { key: Kind; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -72,7 +77,7 @@ export default function Nearby() {
   const mapRef = useRef<MapView>(null);
   const [center, setCenter] = useState<Point | null>(null); // where the last search was centered
   const [mapCenter, setMapCenter] = useState<Point | null>(null); // where the map is now
-  const [radius, setRadius] = useState(1000);
+  const [radius, setRadius] = useState(NEAR);
   const [hiddenGroups, setHiddenGroups] = useState<Set<Group>>(new Set());
   const [places, setPlaces] = useState<NearbyPlace[]>([]);
   const [details, setDetails] = useState<Record<string, PlaceDetails>>({}); // Google data fetched in the app
@@ -311,13 +316,33 @@ export default function Nearby() {
     setQuery(p.name);
     clearSearch();
     setPlaceName(null);
-    setRadius(1000);
+    setRadius(NEAR);
     setPendingSelect(p.ref);
     setCenter({ lat: p.place_lat, lng: p.place_lng });
   }
 
+  // a landmark (a university, an airport, a hotel): center the map there, like a neighborhood
+  async function chooseLandmark(h: GoogleHit) {
+    const token = session.current;
+    setQuery(h.name);
+    clearSearch();
+    setSearching(true);
+    try {
+      const p = await googlePlace(h.google_place_id, token, mapCenter ?? center);
+      if (!p) {
+        setError(`Couldn't find ${h.name} on the map.`);
+        return;
+      }
+      setPlaceName(h.name);
+      setCenter({ lat: p.place_lat, lng: p.place_lng });
+    } finally {
+      setSearching(false);
+    }
+  }
+
   // a restaurant from Google: go there and open its card (save it from there)
   async function chooseGoogle(h: GoogleHit) {
+    if (h.landmark) return chooseLandmark(h);
     const token = session.current;
     setQuery(h.name);
     clearSearch();
@@ -329,7 +354,7 @@ export default function Nearby() {
         return;
       }
       setPlaceName(null);
-      setRadius(1000);
+      setRadius(NEAR);
       setCenter({ lat: p.place_lat, lng: p.place_lng });
       // if it's already one of yours or a pick, the card for that shows up instead (once loaded)
       setPendingSelect(`gid:${p.google_place_id}`);
@@ -357,7 +382,7 @@ export default function Nearby() {
     setQuery(sg.label);
     clearSearch();
     setPlaceName(sg.label);
-    setRadius((r) => Math.max(r, 3000));
+    setRadius((r) => Math.max(r, MID));
     setCenter({ lat: sg.lat, lng: sg.lng });
   }
 
@@ -374,7 +399,7 @@ export default function Nearby() {
         return;
       }
       setPlaceName(q);
-      setRadius((r) => Math.max(r, 3000)); // a city view, not a block
+      setRadius((r) => Math.max(r, MID)); // a city view, not a block
       setCenter({ lat: hits[0].latitude, lng: hits[0].longitude });
     } catch (e) {
       setError(`Couldn't look up "${q}": ${(e as Error).message}`);
@@ -528,7 +553,7 @@ export default function Nearby() {
     try {
       const quick = await runDiscover('google', at.lat, at.lng, 6000, name);
       // show what was found: wider radius, best matches first
-      setRadius(10000);
+      setRadius(WIDE);
       chooseSort('match');
       setCenter({ ...at });
       setDiscovering(`Found ${quick.places} nearby. Searching the local food press…`);
@@ -620,15 +645,27 @@ export default function Nearby() {
               <Text style={styles.suggestDetail}>{[placeLabel(p), p.distance_m ? formatDistance(p.distance_m) : ''].filter(Boolean).join(' · ')}</Text>
             </Pressable>
           ))}
-          {googleHits.filter((g) => !savedHits.some((s) => s.google_place_id === g.google_place_id)).length > 0 && (
+          {googleHits.filter((g) => !g.landmark && !savedHits.some((s) => s.google_place_id === g.google_place_id)).length > 0 && (
             <Text style={styles.suggestHead}>Restaurants</Text>
           )}
           {googleHits
-            .filter((g) => !savedHits.some((s) => s.google_place_id === g.google_place_id))
+            .filter((g) => !g.landmark && !savedHits.some((s) => s.google_place_id === g.google_place_id))
             .map((g) => (
               <Pressable
                 key={`g:${g.google_place_id}`}
                 onPress={() => chooseGoogle(g)}
+                style={({ pressed }) => [styles.suggestRow, pressed && { backgroundColor: colors.line }]}>
+                <Text style={styles.suggestName}>{g.name}</Text>
+                {!!g.detail && <Text style={styles.suggestDetail}>{g.detail}</Text>}
+              </Pressable>
+            ))}
+          {googleHits.some((g) => g.landmark) && <Text style={styles.suggestHead}>Go to</Text>}
+          {googleHits
+            .filter((g) => g.landmark)
+            .map((g) => (
+              <Pressable
+                key={`l:${g.google_place_id}`}
+                onPress={() => chooseLandmark(g)}
                 style={({ pressed }) => [styles.suggestRow, pressed && { backgroundColor: colors.line }]}>
                 <Text style={styles.suggestName}>{g.name}</Text>
                 {!!g.detail && <Text style={styles.suggestDetail}>{g.detail}</Text>}
@@ -819,7 +856,7 @@ export default function Nearby() {
                 ? ''
                 : places.length > 0
                   ? 'Nothing matches the groups and filters you have on.'
-                  : radius < 10000
+                  : radius < WIDE
                     ? `Nothing within ${formatDistance(radius)}. Try a wider radius.`
                     : 'Nothing here yet.'}
             </Text>

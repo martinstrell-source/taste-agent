@@ -3,7 +3,7 @@ import { deepStrictEqual as eq, ok } from 'node:assert';
 
 import { autocompleteBody, placeGet, placeSearch } from './search.ts';
 
-Deno.test('search: food and drink only, near the map, short queries skipped', async () => {
+Deno.test('search: food and drink first, then landmarks; no streets or cities; near the map; short queries skipped', async () => {
   let sent: Record<string, unknown> = {};
   const deps = {
     autocomplete: async (b: Record<string, unknown>) => {
@@ -14,6 +14,8 @@ Deno.test('search: food and drink only, near the map, short queries skipped', as
           { placePrediction: { placeId: 'S1', types: ['street_address'], structuredFormat: { mainText: { text: 'Kingston St' } } } },
           { queryPrediction: { text: { text: 'kin khao menu' } } },
           { placePrediction: { placeId: 'C1', types: ['cafe'], text: { text: 'Kinfolk Coffee' } } },
+          { placePrediction: { placeId: 'U1', types: ['university', 'point_of_interest', 'establishment'], structuredFormat: { mainText: { text: 'Kingston University' }, secondaryText: { text: 'London' } } } },
+          { placePrediction: { placeId: 'T1', types: ['locality', 'political', 'geocode'], text: { text: 'Kingston' } } },
         ],
       };
     },
@@ -23,6 +25,7 @@ Deno.test('search: food and drink only, near the map, short queries skipped', as
   eq(r.hits, [
     { google_place_id: 'K1', name: 'Kin Khao', detail: 'Mason St, San Francisco' },
     { google_place_id: 'C1', name: 'Kinfolk Coffee', detail: '' },
+    { google_place_id: 'U1', name: 'Kingston University', detail: 'London', landmark: true },
   ]);
   eq([sent.sessionToken, (sent.locationBias as { circle: { radius: number } }).circle.radius], ['tok', 50000]);
   eq((await placeSearch({ type: 'place_search', q: 'ki' }, deps)).hits, []);

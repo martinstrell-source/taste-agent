@@ -8,7 +8,18 @@ type Feature = {
   properties?: Record<string, string | number | undefined>;
 };
 
-export function parsePhoton(json: { features?: Feature[] }): Suggestion[] {
+// lowercase words without accents: "São Paulo" -> ["sao", "paulo"]
+const words = (s: string) =>
+  s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+
+// every word typed has to start a word in the result: Photon matches loosely ("University of pennsy"
+// otherwise brings back the University of British Columbia)
+export function matchesTyped(q: string, text: string): boolean {
+  const have = words(text);
+  return words(q).every((w) => have.some((h) => h.startsWith(w)));
+}
+
+export function parsePhoton(json: { features?: Feature[] }, q = ''): Suggestion[] {
   const seen = new Set<string>();
   const out: Suggestion[] = [];
   for (const f of json.features ?? []) {
@@ -22,6 +33,7 @@ export function parsePhoton(json: { features?: Feature[] }): Suggestion[] {
     const detail = [...new Set(parts)].slice(0, 2).join(', ');
     const key = `${name}|${detail}`;
     if (seen.has(key)) continue;
+    if (q && !matchesTyped(q, `${name} ${parts.join(' ')}`)) continue;
     seen.add(key);
     out.push({
       key,
@@ -36,7 +48,7 @@ export function parsePhoton(json: { features?: Feature[] }): Suggestion[] {
 }
 
 export async function suggestPlaces(q: string, near?: { lat: number; lng: number }, signal?: AbortSignal): Promise<Suggestion[]> {
-  const params = new URLSearchParams({ q, limit: '6', lang: 'en' });
+  const params = new URLSearchParams({ q, limit: '10', lang: 'en' }); // extra, since loose matches are dropped
   for (const layer of ['city', 'district', 'locality', 'county']) params.append('layer', layer);
   if (near) {
     params.set('lat', String(near.lat));
@@ -44,5 +56,5 @@ export async function suggestPlaces(q: string, near?: { lat: number; lng: number
   }
   const r = await fetch(`https://photon.komoot.io/api/?${params}`, { signal });
   if (!r.ok) return [];
-  return parsePhoton(await r.json());
+  return parsePhoton(await r.json(), q).slice(0, 6);
 }
