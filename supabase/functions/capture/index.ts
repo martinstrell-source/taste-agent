@@ -11,6 +11,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 
 import { capture, type Input, readBill, SYSTEM } from './core.ts';
 import { type GetInput, placeGet, placeSearch, type SearchInput } from './search.ts';
+import { type StarterInput, starterPlaces } from './starter.ts';
 import { makeHandle, placeRow, prefRows, screenshotList, type ShotInput, starterProfile, type TasteInput, tasteRead, type TasteSaveInput } from './onboard.ts';
 import { type AreaProfile, areaKey, type Box, type DiscoverDeps, type DiscoverInput, discoverGoogle, discoverWeb, type Trace } from './discover.ts';
 
@@ -151,7 +152,7 @@ Deno.serve(async (req) => {
   } catch {
     return Response.json({ error: 'Send JSON' }, { status: 400, headers: cors });
   }
-  const TYPES = ['link', 'text', 'photo', 'friend', 'bill', 'discover', 'me', 'taste_read', 'taste_save', 'screenshot_list', 'place_search', 'place_get'];
+  const TYPES = ['link', 'text', 'photo', 'friend', 'bill', 'discover', 'me', 'taste_read', 'taste_save', 'screenshot_list', 'place_search', 'place_get', 'starter_places'];
   if (!TYPES.includes(input?.type)) {
     return Response.json({ error: `type must be one of ${TYPES.join(', ')}` }, { status: 400, headers: cors });
   }
@@ -207,7 +208,7 @@ Deno.serve(async (req) => {
       const seenIds = new Set<string>();
       const places = (Array.isArray(s.places) ? s.places : [])
         .filter((p) => p?.candidate?.google_place_id && !seenIds.has(p.candidate.google_place_id) && !!seenIds.add(p.candidate.google_place_id))
-        .slice(0, 20);
+        .slice(0, 30);
       const handle = await ensureUser();
       if (places.length) {
         const { error } = await admin.from('places').upsert(places.map((p) => placeRow(uid0, p)), { onConflict: 'user_id,place_key' });
@@ -217,6 +218,15 @@ Deno.serve(async (req) => {
       if (prefs.length) {
         const { error } = await admin.from('user_prefs').upsert(prefs, { onConflict: 'user_id,kind,value', ignoreDuplicates: true });
         if (error) throw new Error(`saving your likes: ${error.message}`);
+      }
+      // "Not for me" on local places: a mild no, so Discover doesn't suggest them
+      const noes = (Array.isArray(s.noes) ? s.noes : []).filter((x) => x?.google_place_id && !seenIds.has(x.google_place_id)).slice(0, 20);
+      if (noes.length) {
+        const { error } = await admin.from('feedback').upsert(
+          noes.map((x) => ({ user_id: uid0, google_place_id: x.google_place_id, name: x.name, reaction: 'meh' })),
+          { onConflict: 'user_id,google_place_id' },
+        );
+        if (error) throw new Error(`saving your answers: ${error.message}`);
       }
       // a starter profile so Discover works now; never replaces a real one from profile.py
       const { data: prof } = await admin.from('user_profiles').select('profile').eq('user_id', uid0).maybeSingle();
@@ -228,6 +238,9 @@ Deno.serve(async (req) => {
       // the Mac mini builds the full profile and this week's picks
       await admin.from('import_jobs').insert({ user_id: uid0, kind: 'refresh' });
       return Response.json({ saved: places.length, handle }, { headers: cors });
+    }
+    if (t === 'starter_places') {
+      return Response.json(await starterPlaces(input as unknown as StarterInput, { googleSearch: googleInBox }), { headers: cors });
     }
     if ((input as unknown as DiscoverInput).type === 'discover') {
       const d = input as unknown as DiscoverInput;

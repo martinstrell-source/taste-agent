@@ -203,6 +203,16 @@ export default function Nearby() {
       .catch(() => {}); // function not updated yet: carry on without onboarding
   }, []);
 
+  // how many places they've saved anywhere: under a few, Nearby suggests adding more
+  const [savedTotal, setSavedTotal] = useState<number | null>(null);
+  useEffect(() => {
+    supabase
+      .from('places')
+      .select('id', { count: 'exact', head: true })
+      .is('hidden_at', null)
+      .then(({ count }) => setSavedTotal(count ?? null));
+  }, [reload]);
+
   // where am I?
   const locate = useCallback(async () => {
     setError(null);
@@ -508,8 +518,8 @@ export default function Nearby() {
   }
 
   // Discover: places you'd like around the map's center. Quick Google results first, then the web.
-  async function discover() {
-    const at = mapCenter ?? center;
+  async function discover(here?: Point) {
+    const at = here ?? mapCenter ?? center;
     if (!at || discovering) return;
     const name = (await areaName(at.lat, at.lng)) ?? placeName ?? undefined;
     const label = name ?? 'here';
@@ -553,7 +563,7 @@ export default function Nearby() {
   useEffect(() => {
     if (!runDiscoverSoon || !center) return;
     setRunDiscoverSoon(false);
-    discover();
+    discover(center); // where they are now, not wherever the map was before location was allowed
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runDiscoverSoon, center]);
 
@@ -570,7 +580,7 @@ export default function Nearby() {
         <Text style={styles.title} numberOfLines={1}>
           {placeName ? placeName : 'Nearby'}
         </Text>
-        <Button title="Discover" icon="sparkles" kind="tinted" color={colors.pick} small onPress={discover} disabled={!!discovering} />
+        <Button title="Discover" icon="sparkles" kind="tinted" color={colors.pick} small onPress={() => discover()} disabled={!!discovering} />
         <IconButton name="plus" label="Add a place" onPress={() => setShowAdd(true)} />
       </View>
 
@@ -787,9 +797,25 @@ export default function Nearby() {
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={{ paddingBottom: 32 }}
           ItemSeparatorComponent={() => <View style={styles.sep} />}
+          ListHeaderComponent={
+            savedTotal !== null && savedTotal < 10 && !discovering ? (
+              <View style={styles.starter}>
+                <Text style={styles.starterTitle}>Picks get better with more of your places</Text>
+                <Text style={styles.starterText}>
+                  Bring in a list from Google Maps or Beli, or add places as you hear about them: a link, a screenshot, a friend's text.
+                </Text>
+                <View style={styles.starterRow}>
+                  <Button title="Import a list" icon="square.and.arrow.down" small style={{ flex: 1 }} onPress={() => setShowImport(true)} />
+                  <Button title="Add a place" icon="plus" kind="secondary" small style={{ flex: 1 }} onPress={() => setShowAdd(true)} />
+                </View>
+              </View>
+            ) : undefined
+          }
           ListEmptyComponent={
             <Text style={styles.empty}>
-              {loading
+              {discovering
+                ? 'Finding places near you…'
+                : loading
                 ? ''
                 : places.length > 0
                   ? 'Nothing matches the groups and filters you have on.'
@@ -864,7 +890,10 @@ export default function Nearby() {
         onDone={({ importNext }) => {
           setShowOnboarding(false);
           setReload((n) => n + 1);
-          setRunDiscoverSoon(true);
+          // find them first (location may have just been allowed in onboarding), then Discover there
+          locate()
+            .catch(() => {})
+            .finally(() => setRunDiscoverSoon(true));
           if (importNext) setTimeout(() => setShowImport(true), 600); // after the onboarding sheet has closed
         }}
       />
@@ -1016,6 +1045,10 @@ const styles = StyleSheet.create({
   filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
   hint: { fontSize: 13, color: colors.muted },
   filterLabel: { width: 40, fontSize: 13, fontWeight: '600', color: colors.muted },
+  starter: { margin: 16, marginBottom: 8, padding: 14, gap: 8, borderRadius: corner.m, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line },
+  starterTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
+  starterText: { fontSize: 14, lineHeight: 20, color: colors.muted },
+  starterRow: { flexDirection: 'row', gap: 8, marginTop: 2 },
   notice: { margin: 16, marginBottom: 0, padding: 12, borderRadius: corner.m, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line },
   noticeText: { color: colors.text, fontSize: 14 },
   error: { color: colors.danger, paddingHorizontal: 16, paddingTop: 8 },

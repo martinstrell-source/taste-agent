@@ -34,8 +34,14 @@ export type TasteRead = { places: TastePlace[]; dishes: string[]; cuisines: stri
 export const readTaste = (text: string, near: { lat: number; lng: number } | null) =>
   call<TasteRead>({ type: 'taste_read', text, ...(near ?? {}) });
 
+// well-known places near a new user, to rate in onboarding
+export type StarterPlace = Candidate & { rating: number | null; reviews: number | null; kind: string };
+export const starterPlaces = (near: { lat: number; lng: number }, exclude: string[]) =>
+  call<{ places: StarterPlace[] }>({ type: 'starter_places', ...near, exclude });
+
 export const saveTaste = (s: {
-  places: { name: string; cuisine?: string; candidate: Candidate }[];
+  places: { name: string; cuisine?: string; candidate: Candidate; list?: 'favorites' | 'want_to_go' }[];
+  noes?: { google_place_id: string; name: string }[];
   dishes: string[];
   cuisines: string[];
   dislikes: string[];

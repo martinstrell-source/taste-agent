@@ -16,7 +16,8 @@ export type TasteRead = { places: TastePlace[]; dishes: string[]; cuisines: stri
 
 export type TasteSaveInput = {
   type: 'taste_save';
-  places: { name: string; cuisine?: string; candidate: Candidate }[];
+  places: { name: string; cuisine?: string; candidate: Candidate; list?: 'favorites' | 'want_to_go' }[]; // favorites unless said
+  noes?: { google_place_id: string; name: string }[]; // local places they marked "Not for me" in onboarding
   dishes?: string[];
   cuisines?: string[];
   dislikes?: string[];
@@ -117,6 +118,7 @@ export function starterProfile(handle: string, s: Omit<TasteSaveInput, 'type'>) 
   const add = (m: Map<string, number>, k: string, w: number) => k && m.set(k, (m.get(k) ?? 0) + w);
   let n = 0;
   for (const p of s.places) {
+    if (p.list === 'want_to_go') continue; // wanting to try a place says less than loving one
     n += 2;
     const cats = p.candidate.categories ?? [];
     const fromGoogle = cats.filter((t) => t.endsWith('_restaurant')).map((t) => t.slice(0, -'_restaurant'.length)).filter((t) => !NOT_CUISINE.has(t));
@@ -168,7 +170,7 @@ export function placeRow(uid: string, p: TasteSaveInput['places'][number]) {
   return {
     user_id: uid,
     place_key: `onboard:${c.google_place_id}`,
-    list_name: 'favorites',
+    list_name: p.list === 'want_to_go' ? 'want_to_go' : 'favorites',
     added_via: 'onboard',
     list_set_in_app: true,
     title: p.name,

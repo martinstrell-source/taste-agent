@@ -1,18 +1,24 @@
 import * as Location from 'expo-location';
 import { useState } from 'react';
-import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { readTaste, saveTaste, type TasteRead } from '@/lib/onboard';
+import { readTaste, saveTaste, starterPlaces, type StarterPlace, type TasteRead } from '@/lib/onboard';
 import { colors, radius } from '@/lib/theme';
-import { Button } from '@/components/ui';
+import { Button, Chip } from '@/components/ui';
 
 type Props = {
   visible: boolean;
   onDone: (opts: { importNext: boolean }) => void; // importNext: open the import screen after
 };
 
-type Step = 'welcome' | 'location' | 'taste' | 'review';
+type Step = 'welcome' | 'location' | 'taste' | 'review' | 'rate';
+type Rating = 'love' | 'want' | 'no';
+const RATINGS: { key: Rating; label: string; color: string }[] = [
+  { key: 'love', label: 'Love it', color: colors.favorite },
+  { key: 'want', label: 'Want to go', color: colors.saved },
+  { key: 'no', label: 'Not for me', color: colors.muted },
+];
 
 export default function Onboarding({ visible, onDone }: Props) {
   const insets = useSafeAreaInsets();
@@ -24,6 +30,8 @@ export default function Onboarding({ visible, onDone }: Props) {
   const [read, setRead] = useState<TasteRead | null>(null);
   const [chosen, setChosen] = useState<Record<number, number | null>>({}); // place index -> candidate index (null = skip)
   const [dishes, setDishes] = useState<string[]>([]);
+  const [starter, setStarter] = useState<StarterPlace[] | null>(null); // well-known places near them, to rate
+  const [rated, setRated] = useState<Record<string, Rating>>({});
 
   async function askLocation() {
     try {
@@ -58,15 +66,34 @@ export default function Onboarding({ visible, onDone }: Props) {
     }
   }
 
+  const named = read
+    ? read.places
+        .map((p, i) => (chosen[i] == null ? null : { name: p.name, cuisine: p.cuisine, candidate: p.candidates[chosen[i] as number] }))
+        .filter((x): x is NonNullable<typeof x> => !!x)
+    : [];
+
+  // next: rate well-known places nearby (needs their location)
+  async function goRate() {
+    setStep('rate');
+    if (starter || !near) return;
+    try {
+      const r = await starterPlaces(near, named.map((p) => p.candidate.google_place_id));
+      setStarter(r.places);
+    } catch {
+      setStarter([]);
+    }
+  }
+
   async function doSave(importNext: boolean) {
     if (!read) return;
     setBusy(true);
     setError(null);
     try {
-      const places = read.places
-        .map((p, i) => (chosen[i] == null ? null : { name: p.name, cuisine: p.cuisine, candidate: p.candidates[chosen[i] as number] }))
-        .filter((x): x is NonNullable<typeof x> => !!x);
-      await saveTaste({ places, dishes, cuisines: read.cuisines, dislikes: read.dislikes, text });
+      const fromRating = (starter ?? [])
+        .filter((p) => rated[p.google_place_id] === 'love' || rated[p.google_place_id] === 'want')
+        .map((p) => ({ name: p.name, candidate: p, list: rated[p.google_place_id] === 'love' ? ('favorites' as const) : ('want_to_go' as const) }));
+      const noes = (starter ?? []).filter((p) => rated[p.google_place_id] === 'no').map((p) => ({ google_place_id: p.google_place_id, name: p.name }));
+      await saveTaste({ places: [...named, ...fromRating], noes, dishes, cuisines: read.cuisines, dislikes: read.dislikes, text });
       onDone({ importNext });
     } catch (e) {
       setError((e as Error).message);
@@ -152,9 +179,58 @@ export default function Onboarding({ visible, onDone }: Props) {
               )}
               {read.cuisines.length > 0 && <Text style={styles.muted}>Cuisines: {read.cuisines.join(', ')}</Text>}
               {error && <Text style={styles.error}>{error}</Text>}
-              <Button title={kept ? `Save ${kept} and show me places` : 'Show me places'} style={styles.mt} onPress={() => doSave(false)} busy={busy} />
-              <Button title="Save, then import my lists" icon="square.and.arrow.down" kind="outline" onPress={() => doSave(true)} disabled={busy} />
+              {near ? (
+                <Button title="Next" style={styles.mt} onPress={goRate} />
+              ) : (
+                <>
+                  <Button title={kept ? `Save ${kept} and show me places` : 'Show me places'} style={styles.mt} onPress={() => doSave(false)} busy={busy} />
+                  <Button title="Save, then import my lists" icon="square.and.arrow.down" kind="outline" onPress={() => doSave(true)} disabled={busy} />
+                </>
+              )}
               <Pressable onPress={() => setStep('taste')} hitSlop={8}>
+                <Text style={styles.back}>Back</Text>
+              </Pressable>
+            </>
+          )}
+
+          {step === 'rate' && read && (
+            <>
+              <Text style={styles.title}>Know any of these?</Text>
+              <Text style={styles.body}>Well-known places near you. Tap what fits and skip the ones you don't know.</Text>
+              {starter === null && <ActivityIndicator style={{ marginVertical: 24 }} />}
+              {starter?.length === 0 && <Text style={styles.muted}>Couldn't find places near you to show. You can go on.</Text>}
+              {(starter ?? []).map((p) => {
+                const area = p.address?.split(',')[1]?.trim();
+                const facts = [p.kind, p.rating ? `${p.rating.toFixed(1)} ★` : null, area].filter(Boolean).join(' · ');
+                return (
+                  <View key={p.google_place_id} style={styles.place}>
+                    <Text style={styles.placeName}>{p.name}</Text>
+                    <Text style={styles.muted} numberOfLines={1}>{facts}</Text>
+                    <View style={styles.chips}>
+                      {RATINGS.map((r) => (
+                        <Chip
+                          key={r.key}
+                          label={r.label}
+                          color={r.color}
+                          on={rated[p.google_place_id] === r.key}
+                          onPress={() =>
+                            setRated((x) => {
+                              const n = { ...x };
+                              if (n[p.google_place_id] === r.key) delete n[p.google_place_id];
+                              else n[p.google_place_id] = r.key;
+                              return n;
+                            })
+                          }
+                        />
+                      ))}
+                    </View>
+                  </View>
+                );
+              })}
+              {error && <Text style={styles.error}>{error}</Text>}
+              <Button title="Show me places" style={styles.mt} onPress={() => doSave(false)} busy={busy} disabled={starter === null} />
+              <Button title="Save, then import my lists" icon="square.and.arrow.down" kind="outline" onPress={() => doSave(true)} disabled={busy || starter === null} />
+              <Pressable onPress={() => setStep('review')} hitSlop={8}>
                 <Text style={styles.back}>Back</Text>
               </Pressable>
             </>

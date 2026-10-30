@@ -1,5 +1,5 @@
 // ONE-FILE VERSION for pasting into the Supabase dashboard editor (Edge Functions > capture > Code).
-// Generated from index.ts + core.ts + discover.ts + onboard.ts + search.ts by build-paste.py; edit those, not this.
+// Generated from index.ts + core.ts + discover.ts + onboard.ts + search.ts + starter.ts by build-paste.py; edit those, not this.
 
 // Supabase Edge Function "capture": the server side of "Add a place".
 // Reads a link, pasted text, a photo or a friend's tip with Claude, then suggests Google matches.
@@ -150,7 +150,7 @@ Deno.serve(async (req) => {
   } catch {
     return Response.json({ error: 'Send JSON' }, { status: 400, headers: cors });
   }
-  const TYPES = ['link', 'text', 'photo', 'friend', 'bill', 'discover', 'me', 'taste_read', 'taste_save', 'screenshot_list', 'place_search', 'place_get'];
+  const TYPES = ['link', 'text', 'photo', 'friend', 'bill', 'discover', 'me', 'taste_read', 'taste_save', 'screenshot_list', 'place_search', 'place_get', 'starter_places'];
   if (!TYPES.includes(input?.type)) {
     return Response.json({ error: `type must be one of ${TYPES.join(', ')}` }, { status: 400, headers: cors });
   }
@@ -206,7 +206,7 @@ Deno.serve(async (req) => {
       const seenIds = new Set<string>();
       const places = (Array.isArray(s.places) ? s.places : [])
         .filter((p) => p?.candidate?.google_place_id && !seenIds.has(p.candidate.google_place_id) && !!seenIds.add(p.candidate.google_place_id))
-        .slice(0, 20);
+        .slice(0, 30);
       const handle = await ensureUser();
       if (places.length) {
         const { error } = await admin.from('places').upsert(places.map((p) => placeRow(uid0, p)), { onConflict: 'user_id,place_key' });
@@ -216,6 +216,15 @@ Deno.serve(async (req) => {
       if (prefs.length) {
         const { error } = await admin.from('user_prefs').upsert(prefs, { onConflict: 'user_id,kind,value', ignoreDuplicates: true });
         if (error) throw new Error(`saving your likes: ${error.message}`);
+      }
+      // "Not for me" on local places: a mild no, so Discover doesn't suggest them
+      const noes = (Array.isArray(s.noes) ? s.noes : []).filter((x) => x?.google_place_id && !seenIds.has(x.google_place_id)).slice(0, 20);
+      if (noes.length) {
+        const { error } = await admin.from('feedback').upsert(
+          noes.map((x) => ({ user_id: uid0, google_place_id: x.google_place_id, name: x.name, reaction: 'meh' })),
+          { onConflict: 'user_id,google_place_id' },
+        );
+        if (error) throw new Error(`saving your answers: ${error.message}`);
       }
       // a starter profile so Discover works now; never replaces a real one from profile.py
       const { data: prof } = await admin.from('user_profiles').select('profile').eq('user_id', uid0).maybeSingle();
@@ -227,6 +236,9 @@ Deno.serve(async (req) => {
       // the Mac mini builds the full profile and this week's picks
       await admin.from('import_jobs').insert({ user_id: uid0, kind: 'refresh' });
       return Response.json({ saved: places.length, handle }, { headers: cors });
+    }
+    if (t === 'starter_places') {
+      return Response.json(await starterPlaces(input as unknown as StarterInput, { googleSearch: googleInBox }), { headers: cors });
     }
     if ((input as unknown as DiscoverInput).type === 'discover') {
       const d = input as unknown as DiscoverInput;
@@ -1213,7 +1225,8 @@ export type TasteRead = { places: TastePlace[]; dishes: string[]; cuisines: stri
 
 export type TasteSaveInput = {
   type: 'taste_save';
-  places: { name: string; cuisine?: string; candidate: Candidate }[];
+  places: { name: string; cuisine?: string; candidate: Candidate; list?: 'favorites' | 'want_to_go' }[]; // favorites unless said
+  noes?: { google_place_id: string; name: string }[]; // local places they marked "Not for me" in onboarding
   dishes?: string[];
   cuisines?: string[];
   dislikes?: string[];
@@ -1314,6 +1327,7 @@ export function starterProfile(handle: string, s: Omit<TasteSaveInput, 'type'>) 
   const add = (m: Map<string, number>, k: string, w: number) => k && m.set(k, (m.get(k) ?? 0) + w);
   let n = 0;
   for (const p of s.places) {
+    if (p.list === 'want_to_go') continue; // wanting to try a place says less than loving one
     n += 2;
     const cats = p.candidate.categories ?? [];
     const fromGoogle = cats.filter((t) => t.endsWith('_restaurant')).map((t) => t.slice(0, -'_restaurant'.length)).filter((t) => !NOT_CUISINE.has(t));
@@ -1365,7 +1379,7 @@ export function placeRow(uid: string, p: TasteSaveInput['places'][number]) {
   return {
     user_id: uid,
     place_key: `onboard:${c.google_place_id}`,
-    list_name: 'favorites',
+    list_name: p.list === 'want_to_go' ? 'want_to_go' : 'favorites',
     added_via: 'onboard',
     list_set_in_app: true,
     title: p.name,
@@ -1516,4 +1530,59 @@ export async function placeGet(input: GetInput, deps: SearchDeps): Promise<{ pla
       price_level: (g.priceLevel as string | undefined) ?? null,
     },
   };
+}
+
+// ---------- starter.ts ----------
+
+// First run: well-known places near a new user, for them to rate in onboarding
+// (Love it / Want to go / Not for me / haven't been). A dozen quick answers tell Discover more than a blank start.
+
+export type StarterInput = { type: 'starter_places'; lat?: number; lng?: number; exclude?: string[] };
+export type StarterPlace = Candidate & { rating: number | null; reviews: number | null; kind: string };
+type SPlace = Record<string, unknown>;
+export type StarterDeps = { googleSearch: (query: string, box: Box, rating: boolean) => Promise<SPlace[]> };
+
+export const STARTER_COUNT = 12;
+// restaurants first, then a few cafes, bakeries and bars, so it isn't all dinner spots
+const QUERIES = [
+  { q: 'popular restaurants', take: 8 },
+  { q: 'popular cafes bakeries and bars', take: 4 },
+];
+const SKIP = /^(point_of_interest|establishment|food|restaurant|store)$/;
+
+// "Thai restaurant", "Bakery": the most specific Google type, in words
+export function kindOf(types: string[]): string {
+  const t = types.find((x) => !SKIP.test(x)) ?? 'restaurant';
+  const s = t.replace(/_/g, ' ');
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+export async function starterPlaces(input: StarterInput, deps: StarterDeps): Promise<{ places: StarterPlace[] }> {
+  if (typeof input.lat !== 'number' || typeof input.lng !== 'number') return { places: [] };
+  const box = boxAround(input.lat, input.lng, 6000);
+  const skip = new Set(input.exclude ?? []);
+  const lists = await Promise.all(
+    QUERIES.map(async ({ q, take }) => {
+      const res = await deps.googleSearch(q, box, true).catch(() => [] as SPlace[]);
+      return res
+        .filter((g) => {
+          const name = ((g.displayName as { text?: string } | undefined)?.text ?? '').trim();
+          const rating = (g.rating as number | undefined) ?? 0;
+          const count = (g.userRatingCount as number | undefined) ?? 0;
+          return !!g.id && !skip.has(g.id as string) && !isChain(name) && (g.businessStatus ?? 'OPERATIONAL') === 'OPERATIONAL' && rating >= 4.2 && count >= 150;
+        })
+        // well known first: the point is places they've likely heard of or been to
+        .sort((a, b) => ((b.userRatingCount as number) ?? 0) - ((a.userRatingCount as number) ?? 0))
+        .slice(0, take);
+    }),
+  );
+  const seen = new Set<string>();
+  const places: StarterPlace[] = [];
+  for (const g of lists.flat()) {
+    const c = toCandidate(g);
+    if (!c || !c.is_food || seen.has(c.google_place_id)) continue;
+    seen.add(c.google_place_id);
+    places.push({ ...c, rating: (g.rating as number | undefined) ?? null, reviews: (g.userRatingCount as number | undefined) ?? null, kind: kindOf(c.categories) });
+  }
+  return { places: places.slice(0, STARTER_COUNT) };
 }

@@ -73,3 +73,11 @@ Deno.test('pasted list: text goes to Claude with the list prompt, same result sh
   ok(sent.includes('The list:') && sent.includes('Delfina (Mission)'));
   eq(r.places.map((p) => p.name), ['Nopa', 'Delfina']);
 });
+
+Deno.test('taste_save rows: places rated Want to go go to Want to go and do not count as loved cuisines', () => {
+  const c = (id: string, cat: string) => ({ google_place_id: id, name: id, address: null, lat: 1, lng: 2, categories: [cat], is_food: true, open: true });
+  eq(placeRow('u', { name: 'A', candidate: c('A', 'thai_restaurant'), list: 'want_to_go' }).list_name, 'want_to_go');
+  eq(placeRow('u', { name: 'B', candidate: c('B', 'thai_restaurant') }).list_name, 'favorites');
+  const prof = starterProfile('h', { places: [{ name: 'A', candidate: c('A', 'thai_restaurant'), list: 'want_to_go' }, { name: 'B', candidate: c('B', 'pizza_restaurant') }] });
+  eq(Object.keys(prof.cuisines), ['pizza']);
+});
