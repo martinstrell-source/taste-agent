@@ -5,6 +5,7 @@ import * as Location from 'expo-location';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   FlatList,
   Keyboard,
@@ -541,6 +542,26 @@ export default function Nearby() {
     await u.run();
     setReload((n) => n + 1);
   }
+  // hide every current suggestion, everywhere (not a "no": taste is unaffected; Discover can find them again)
+  function clearSuggestions() {
+    Alert.alert(
+      'Clear all suggestions?',
+      "This removes every suggestion from your list, everywhere, not just here. Your saved places stay. It doesn't count as \"Not for me\": Discover and the weekly news can suggest a place again later.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear all',
+          style: 'destructive',
+          onPress: async () => {
+            const { error } = await supabase.rpc('clear_suggestions');
+            if (error) setError(/clear_suggestions/.test(error.message) ? 'This needs the latest database update (run deploy.sh).' : error.message);
+            else setReload((n) => n + 1);
+          },
+        },
+      ],
+    );
+  }
+
   // "Not interested" comes with the reason the card asked for, if any
   async function pickAction(p: NearbyPlace, action: 'want' | 'not_interested', note?: string | null) {
     setSelected(null);
@@ -882,6 +903,7 @@ export default function Nearby() {
             <View style={styles.footer}>
               <Button title="Import places" icon="square.and.arrow.down" kind="secondary" small onPress={() => setShowImport(true)} />
               <Button title="Hidden places" icon="eye.slash" kind="secondary" small onPress={() => setShowHidden(true)} />
+              <Button title="Clear suggestions" icon="trash" kind="secondary" small onPress={clearSuggestions} />
               <Button title="Sign out" kind="secondary" small onPress={() => supabase.auth.signOut()} />
             </View>
           }
