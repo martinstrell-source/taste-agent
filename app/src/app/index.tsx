@@ -19,6 +19,7 @@ import MapView, { Marker, PROVIDER_GOOGLE, type Region } from 'react-native-maps
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import AddPlace, { type Shared } from '@/components/AddPlace';
+import WhyNot from '@/components/WhyNot';
 import { Button, Chip, Icon, IconButton, Segmented } from '@/components/ui';
 import HiddenList from '@/components/HiddenList';
 import ImportPlaces from '@/components/ImportPlaces';
@@ -74,6 +75,7 @@ export default function Nearby() {
   const [mapCenter, setMapCenter] = useState<Point | null>(null); // where the map is now
   const [radius, setRadius] = useState(1000);
   const [hiddenGroups, setHiddenGroups] = useState<Set<Group>>(new Set());
+  const [whyNot, setWhyNot] = useState<NearbyPlace | null>(null);
   const [places, setPlaces] = useState<NearbyPlace[]>([]);
   const [details, setDetails] = useState<Record<string, PlaceDetails>>({}); // Google data fetched in the app
   const [loading, setLoading] = useState(true);
@@ -494,10 +496,15 @@ export default function Nearby() {
     await u.run();
     setReload((n) => n + 1);
   }
-  async function pickAction(p: NearbyPlace, action: 'want' | 'not_interested') {
+  // "Not interested" asks why first (optional), then records it
+  async function pickAction(p: NearbyPlace, action: 'want' | 'not_interested', note?: string | null) {
     setSelected(null);
+    if (action === 'not_interested' && note === undefined) {
+      setTimeout(() => setWhyNot(p), 350); // after the place card has closed
+      return;
+    }
     try {
-      const receipt = action === 'want' ? await saveFromPick(p) : await notInterested(p);
+      const receipt = action === 'want' ? await saveFromPick(p) : await notInterested(p, note);
       if (action === 'want') setReload((n) => n + 1); // comes back as one of your saves
       else setPlaces((ps) => ps.filter((x) => !(x.kind === 'pick' && x.ref === p.ref)));
       offerUndo(action === 'want' ? `Added ${p.name} to Want to go` : `Won't show ${p.name} again`, () => undoPick(receipt));
@@ -865,6 +872,14 @@ export default function Nearby() {
           setReload((n) => n + 1);
           setRunDiscoverSoon(true);
           if (importNext) setTimeout(() => setShowImport(true), 600); // after the onboarding sheet has closed
+        }}
+      />
+      <WhyNot
+        place={whyNot}
+        onDone={(note) => {
+          const p = whyNot;
+          setWhyNot(null);
+          if (p) pickAction(p, 'not_interested', note);
         }}
       />
       <HiddenList visible={showHidden} onClose={() => setShowHidden(false)} onChanged={() => setReload((n) => n + 1)} />

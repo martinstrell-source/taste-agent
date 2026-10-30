@@ -252,3 +252,45 @@ Deno.test('away: a saved profile without a size is asked again once', async () =
   await discoverGoogle({ type: 'discover', mode: 'google', lat: 39.9, lng: 116.4 }, d);
   eq(asked, 1);
 });
+
+Deno.test('noes: places like ones the user turned down are left out, with the reason in the trace', async () => {
+  let asked = '';
+  const { d, saved } = deps({
+    dislikes: async () => ['Golden Dragon: looks American Chinese'],
+    claudeText: async (p) => ((asked = p), 'Sure: [{"n": 2, "why": "like Golden Dragon"}]'),
+  });
+  const trace: Record<string, unknown> = {};
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, d, trace);
+  ok(asked.includes('Golden Dragon: looks American Chinese'));
+  const flagged = asked.split('\n').find((l) => l.startsWith('2. '))!.slice(3).split(' (')[0];
+  const ids = saved[0].scores.map((x) => x.google_place_id);
+  const c = deps();
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, c.d);
+  eq(ids.length, c.saved[0].scores.length - 1);
+  const noes = trace.your_noes as { left_out: { name: string; why: string }[] };
+  eq(noes.left_out, [{ name: flagged, why: 'like Golden Dragon' }]);
+  eq(ids.length, new Set(ids).size);
+});
+
+Deno.test('noes: none said means no extra Claude call; unreadable answer keeps everything', async () => {
+  let calls = 0;
+  const a = deps({ claudeText: async () => (calls++, '') });
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, a.d);
+  eq(calls, 0);
+  const b = deps({ dislikes: async () => ['X: too touristy'], claudeText: async () => 'no idea' });
+  const c = deps();
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, b.d);
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, c.d);
+  eq(b.saved[0].scores.length, c.saved[0].scores.length);
+});
+
+Deno.test('noes: the web search is told what they turned down', async () => {
+  let prompt = '';
+  const { d } = deps({
+    dislikes: async () => ['Golden Dragon: looks American Chinese'],
+    claudeWeb: async (p) => ((prompt = p), { text: '[]', searches: 1 }),
+  });
+  await discoverWeb({ type: 'discover', mode: 'web', lat: 45.52, lng: -122.68, area_name: 'Portland' }, d);
+  ok(prompt.includes('"Golden Dragon: looks American Chinese"') && prompt.includes('Leave out places like those'));
+  ok(prompt.trim().endsWith('"source_url": "..."}'));
+});

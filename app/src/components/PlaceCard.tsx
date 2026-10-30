@@ -189,7 +189,7 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
           </ScrollView>
 
           <View style={styles.hideRow}>
-            <Button title="Google Maps" icon="arrow.triangle.turn.up.right.diamond.fill" style={{ flex: 2.2 }} onPress={() => Linking.openURL(mapsUrl(place))} />
+            <Button title="Google Maps" style={{ flex: 1.6 }} onPress={() => Linking.openURL(mapsUrl(place))} />
             <Button title="Waze" kind="secondary" style={{ flex: 1 }} onPress={() => Linking.openURL(wazeUrl(place))} />
             <Button title="Yelp" kind="secondary" style={{ flex: 1 }} onPress={() => Linking.openURL(yelpUrl(place))} />
           </View>
@@ -249,7 +249,7 @@ const styles = StyleSheet.create({
   source: { fontSize: 14, color: colors.muted, fontStyle: 'italic' },
   noteBox: { backgroundColor: colors.bg, borderRadius: radius.m, padding: 12, gap: 4, marginTop: 4 },
   noteLabel: { fontSize: 13, fontWeight: '600', color: colors.muted },
-  hideRow: { flexDirection: 'row', gap: 10 },
+  hideRow: { flexDirection: 'row', gap: 8 },
   why: { fontSize: 15, fontWeight: '600', color: colors.pick },
   visit: { gap: 3, paddingVertical: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
   visitHead: { fontSize: 15, fontWeight: '600', color: colors.text },

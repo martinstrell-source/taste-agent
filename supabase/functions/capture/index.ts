@@ -278,6 +278,17 @@ Deno.serve(async (req) => {
           await admin.from('area_profiles').upsert({ city_key: ck, area_name: name, profile: p }, { onConflict: 'city_key' });
         },
         claudeText: (prompt) => claude([{ type: 'text', text: prompt }], true),
+        // the reasons they gave for "Not interested" and "didn't like it", newest first, plus dislikes from onboarding
+        dislikes: async () => {
+          const [f, p] = await Promise.all([
+            admin.from('feedback').select('name, note').eq('user_id', uid).in('reaction', ['meh', 'no']).not('note', 'is', null).order('created_at', { ascending: false }).limit(25),
+            admin.from('user_prefs').select('value').eq('user_id', uid).eq('kind', 'dislike_other').limit(10),
+          ]);
+          return [
+            ...(f.data ?? []).map((r) => (r.name ? `${r.name}: ${r.note}` : String(r.note))),
+            ...(p.data ?? []).map((r) => `In general: ${r.value}`),
+          ];
+        },
         existingForArea: async (_key, prefix) => {
           const { data } = await admin.from('candidates').select('google_place_id, name, cuisine, source').like('item_id', `${prefix}%`).not('google_place_id', 'is', null);
           return (data ?? []) as { google_place_id: string; name: string | null; cuisine: string | null; source: string }[];

@@ -60,7 +60,7 @@ export function Button({
       ) : (
         <View style={styles.btnInner}>
           {icon && <Icon name={icon} color={fg} size={small ? 14 : 16} />}
-          <Text style={[styles.btnText, small && styles.btnTextSmall, { color: fg }]} numberOfLines={1}>
+          <Text style={[styles.btnText, small && styles.btnTextSmall, { color: fg }]} numberOfLines={1} maxFontSizeMultiplier={1.1} adjustsFontSizeToFit minimumFontScale={0.7}>
             {title}
           </Text>
         </View>
@@ -118,7 +118,7 @@ export function Chip({
       accessibilityState={{ selected: on }}
       style={({ pressed }) => [styles.chip, on ? { backgroundColor: fill, borderColor: fill } : null, pressed && { opacity: 0.8 }]}>
       {icon ? <Icon name={icon} color={on ? '#fff' : colors.text} size={13} /> : color ? <View style={[styles.dot, { backgroundColor: on ? '#fff' : color }]} /> : null}
-      <Text style={[styles.chipText, on && { color: '#fff' }]} numberOfLines={1}>
+      <Text style={[styles.chipText, on && { color: '#fff' }]} numberOfLines={1} maxFontSizeMultiplier={1.1} adjustsFontSizeToFit minimumFontScale={0.8}>
         {label}
       </Text>
     </Pressable>
@@ -147,7 +147,7 @@ export function Segmented<T extends string | number>({
             accessibilityRole="button"
             accessibilityState={{ selected: on }}
             style={[styles.segBtn, on && styles.segOn]}>
-            <Text style={[styles.segText, on && styles.segTextOn]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
+            <Text style={[styles.segText, on && styles.segTextOn]} numberOfLines={1} maxFontSizeMultiplier={1.1} adjustsFontSizeToFit minimumFontScale={0.7}>
               {o.label}
             </Text>
           </Pressable>
@@ -161,7 +161,7 @@ export function Segmented<T extends string | number>({
 export function SheetHeader({ title, action, onAction }: { title: string; action: string; onAction: () => void }): ReactNode {
   return (
     <View style={styles.sheetHead}>
-      <Text style={styles.sheetTitle}>{title}</Text>
+      <Text style={styles.sheetTitle} maxFontSizeMultiplier={1.2}>{title}</Text>
       <Pressable onPress={onAction} hitSlop={10} accessibilityRole="button">
         <Text style={styles.sheetAction}>{action}</Text>
       </Pressable>
@@ -170,10 +170,10 @@ export function SheetHeader({ title, action, onAction }: { title: string; action
 }
 
 const styles = StyleSheet.create({
-  btn: { borderRadius: radius.m, paddingVertical: 14, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center' },
-  btnSmall: { paddingVertical: 9, paddingHorizontal: 12, borderRadius: radius.s },
-  btnInner: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-  btnText: { fontSize: 16, fontWeight: '700' },
+  btn: { borderRadius: radius.m, paddingVertical: 14, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center' },
+  btnSmall: { paddingVertical: 9, paddingHorizontal: 8, borderRadius: radius.s },
+  btnInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, maxWidth: '100%' },
+  btnText: { flexShrink: 1, fontSize: 16, fontWeight: '700' },
   btnTextSmall: { fontSize: 14, fontWeight: '600' },
   outline: { borderWidth: 1.5, borderColor: colors.text },
   iconBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
@@ -182,9 +182,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line,
   },
   dot: { width: 8, height: 8, borderRadius: 4 },
-  chipText: { fontSize: 14, fontWeight: '600', color: colors.text },
+  chipText: { flexShrink: 1, fontSize: 14, fontWeight: '600', color: colors.text },
   seg: { flexDirection: 'row', backgroundColor: colors.soft, borderRadius: radius.s + 2, padding: 3 },
-  segBtn: { flex: 1, paddingVertical: 7, paddingHorizontal: 4, borderRadius: radius.s, alignItems: 'center', justifyContent: 'center' },
+  segBtn: { flex: 1, paddingVertical: 7, paddingHorizontal: 2, borderRadius: radius.s, alignItems: 'center', justifyContent: 'center' },
   segOn: { backgroundColor: colors.card, shadowColor: '#000', shadowOpacity: 0.12, shadowRadius: 3, shadowOffset: { width: 0, height: 1 } },
   segText: { fontSize: 14, fontWeight: '600', color: colors.muted },
   segTextOn: { color: colors.text },

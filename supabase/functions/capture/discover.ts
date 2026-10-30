@@ -60,6 +60,7 @@ export type DiscoverDeps = {
   getAreaProfile: (cityKey: string) => Promise<AreaProfile | null>;
   saveAreaProfile: (cityKey: string, areaName: string, p: AreaProfile) => Promise<void>;
   claudeText: (prompt: string) => Promise<string>; // no web search: fast
+  dislikes?: () => Promise<string[]>; // what this user said no to, in their words ("Golden Dragon: looks American Chinese")
 };
 
 export type Box = { low: { latitude: number; longitude: number }; high: { latitude: number; longitude: number } };
@@ -74,6 +75,48 @@ export function isChain(name: string): boolean {
   return CHAINS.test(name.trim().replace(/[’`]/g, "'"));
 }
 const FOOD = /restaurant|food|cafe|coffee|bakery|bar|pub|brewery|winery|meal_|ice_cream|dessert|tea|juice|deli|confectionery|donut|bagel/;
+
+// ---------- what the user said no to ----------
+
+export function dislikePrompt(dislikes: string[], places: { id: string; name: string; detail: string }[]): string {
+  return `Someone uses an app that suggests restaurants. When they turned suggestions down, they said:
+${dislikes.map((d) => `- ${d}`).join('\n')}
+
+Here are new suggestions for them (name, then what Google or an article says about it):
+${places.map((p, i) => `${i + 1}. ${p.name}${p.detail ? ` (${p.detail})` : ''}`).join('\n')}
+
+Which of these would they most likely turn down for the same reasons? Only flag a place when the name or details
+make it clear (a reason like "too far" or "too pricey" for one place says little about others). Most should stay.
+Answer with only a JSON array: [{"n": <number>, "why": "a few words"}]. Use [] if none.`;
+}
+
+// one fast Claude call: ids to leave out, with the reason, recorded in the trace
+export async function screenDislikes(
+  places: { id: string; name: string; detail: string }[],
+  deps: DiscoverDeps,
+  trace: Trace,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  const dislikes = (await deps.dislikes?.().catch(() => [])) ?? [];
+  if (!dislikes.length || !places.length) return out;
+  const list = places.slice(0, 60);
+  const answer = await deps.claudeText(dislikePrompt(dislikes, list)).catch(() => '');
+  const dropped: { name: string; why: string }[] = [];
+  try {
+    const m = answer.match(/\[[\s\S]*\]/);
+    for (const x of JSON.parse(m ? m[0] : '[]')) {
+      const p = list[Number(x?.n) - 1];
+      if (p && !out.has(p.id)) {
+        out.add(p.id);
+        dropped.push({ name: p.name, why: String(x?.why ?? '') });
+      }
+    }
+  } catch {
+    // unreadable answer: keep everything
+  }
+  trace.your_noes = { said: dislikes, left_out: dropped };
+  return out;
+}
 
 // about 5 km cells: everyone near the same spot shares one cache entry
 export function areaKey(lat: number, lng: number): string {
@@ -260,6 +303,7 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
   const items: { item_id: string; source: string; title: string; link: string | null }[] = [];
   const rows: CandidateRow[] = [];
   const scores = new Map<string, Score>();
+  const info = new Map<string, { id: string; name: string; detail: string }>(); // for screening against the user's noes
   let searched = 0;
   const tsearches: Record<string, unknown>[] = [];
   trace.searches = tsearches;
@@ -328,13 +372,18 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
         const score = 0.6 * fit + 0.4 * quality(g.rating as number, g.userRatingCount as number);
         const reason = Q.reason;
         kept.push(`${label} (${Math.round(score * 100)})`);
+        if (!info.has(id)) {
+          const types = ((g.types as string[] | undefined) ?? []).filter((t) => !/^(point_of_interest|establishment|food|restaurant)$/.test(t)).slice(0, 3);
+          info.set(id, { id, name: label, detail: [Q.cuisine, ...types.map((t) => t.replace(/_/g, ' '))].filter(Boolean).join('; ') });
+        }
         const prev = scores.get(id);
         if (!prev || score > prev.score) scores.set(id, { google_place_id: id, score: Math.round(score * 1000) / 1000, reason });
       });
     }),
   );
 
-  await deps.save(items, rows, [...scores.values()], key, 'google');
+  const no = await screenDislikes([...info.values()].filter((p) => scores.has(p.id)), deps, trace);
+  await deps.save(items, rows, [...scores.values()].filter((x) => !no.has(x.google_place_id)), key, 'google');
   trace.kind = 'google';
   trace.result = { searched, reused: queries.length - searched, places: scores.size };
   return { mode: 'google', area: key, away: !!away, searched, places: scores.size };
@@ -342,22 +391,27 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
 
 // ---------- slow: the web ----------
 
-export function webPrompt(area: string, cuisines: string[], away?: AreaProfile | null): string {
+export function webPrompt(area: string, cuisines: string[], away?: AreaProfile | null, dislikes: string[] = []): string {
+  const noes = dislikes.length
+    ? `\nWhen they turned places down, they said: ${dislikes.slice(0, 15).map((d) => `"${d}"`).join('; ')}. Leave out places like those.`
+    : '';
+  return webPromptBase(area, cuisines, away) + noes + WEB_FORMAT;
+}
+
+function webPromptBase(area: string, cuisines: string[], away?: AreaProfile | null): string {
   if (away) {
     return `Find restaurants, cafes, bakeries and bars in or near ${area} for a visitor who travels for food.
 Their favorite cuisines: ${cuisines.map(nice).join(', ') || 'varied'}.
 Favor what ${area} is known for and does better than elsewhere: ${[...away.local, ...away.strengths].map((x) => x.name).join(', ')}.
 Their favorite cuisines count when they are also strong here. Include other non-local food only when the place is a
 standout that local food writers single out, or a local take on it. Skip chains and famous tourist standbys.
-Use the local food press, local guides and recent reviews. Places must be open now.
-${WEB_FORMAT}`;
+Use the local food press, local guides and recent reviews. Places must be open now.`;
   }
   return `Find restaurants, cafes, bakeries and bars in or near ${area} that a visitor with this taste would want to try.
 Their favorite cuisines: ${cuisines.map(nice).join(', ') || 'varied'}.
 Use the local food press, "best new restaurants" lists, local guides and recent reviews. Prefer places that opened or
 got press in the last year, and lesser-known places that fit their cuisines, over famous tourist standbys.
-Places must be open now.
-${WEB_FORMAT}`;
+Places must be open now.`;
 }
 
 const WEB_FORMAT = `
@@ -407,8 +461,10 @@ export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps, trac
   if ([...cached].some((id) => id.startsWith(`here:${key}:w:`))) {
     // the web was searched for this area recently (by anyone): reuse, and score for this user
     const prev = await deps.existingForArea(key, `here:${key}:w:`);
-    const scores = prev
-      .filter((p) => !known.has(p.google_place_id) && !isChain(p.name ?? ''))
+    const fresh = prev.filter((p) => !known.has(p.google_place_id) && !isChain(p.name ?? ''));
+    const no = await screenDislikes(fresh.map((p) => ({ id: p.google_place_id, name: p.name ?? '', detail: p.cuisine ?? '' })), deps, trace);
+    const scores = fresh
+      .filter((p) => !no.has(p.google_place_id))
       .map((p) => ({ google_place_id: p.google_place_id, score: 0.55, reason: `From ${p.source}` }));
     await deps.save([], [], scores, key, 'web-cached');
     trace.kind = 'web-cached';
@@ -422,7 +478,8 @@ export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps, trac
     return { mode: 'web', area: key, places: 0, message: `Web search is limited to ${limit} new areas a day. The quick results are still here.` };
   }
 
-  const prompt = webPrompt(input.area_name || `the area around ${input.lat.toFixed(3)}, ${input.lng.toFixed(3)}`, cuisines, away);
+  const dislikes = (await deps.dislikes?.().catch(() => [])) ?? [];
+  const prompt = webPrompt(input.area_name || `the area around ${input.lat.toFixed(3)}, ${input.lng.toFixed(3)}`, cuisines, away, dislikes);
   trace.kind = 'web'; // counts toward the daily limit even if a later step fails
   trace.prompt = prompt;
   const { text, searches, queries, pages } = await deps.claudeWeb(prompt);

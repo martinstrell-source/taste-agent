@@ -68,13 +68,14 @@ export async function saveFromPick(p: NearbyPlace): Promise<PickReceipt> {
   return { kind: 'saved', googleId: gid, placeId: data?.id ?? null };
 }
 
-// "Not interested": the pick goes away for good and counts as a mild no (like "meh") for taste
-export async function notInterested(p: NearbyPlace): Promise<PickReceipt> {
+// "Not interested": the pick goes away for good and counts as a mild no (like "meh") for taste.
+// The reason, if given, is what Discover uses to leave out places like it.
+export async function notInterested(p: NearbyPlace, note?: string | null): Promise<PickReceipt> {
   const uid = await userId();
   const gid = p.google_place_id ?? p.ref;
   const { error } = await supabase
     .from('feedback')
-    .upsert({ user_id: uid, google_place_id: gid, name: p.name, reaction: 'meh' }, { onConflict: 'user_id,google_place_id' });
+    .upsert({ user_id: uid, google_place_id: gid, name: p.name, reaction: 'meh', note: note?.trim() || null }, { onConflict: 'user_id,google_place_id' });
   if (error) throw new Error(error.message);
   return { kind: 'not_interested', googleId: gid, placeId: null };
 }
