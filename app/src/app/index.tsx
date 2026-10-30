@@ -281,7 +281,7 @@ export default function Nearby() {
       setGoogleHits([]);
       return;
     }
-    const near = mapCenter ?? center;
+    const near = (mapOpen && mapCenter) || center;
     const ctl = new AbortController();
     let live = true;
     const t = setTimeout(() => {
@@ -328,7 +328,7 @@ export default function Nearby() {
     clearSearch();
     setSearching(true);
     try {
-      const p = await googlePlace(h.google_place_id, token, mapCenter ?? center);
+      const p = await googlePlace(h.google_place_id, token, (mapOpen && mapCenter) || center);
       if (!p) {
         setError(`Couldn't find ${h.name} on the map.`);
         return;
@@ -348,7 +348,7 @@ export default function Nearby() {
     clearSearch();
     setSearching(true);
     try {
-      const p = await googlePlace(h.google_place_id, token, mapCenter ?? center);
+      const p = await googlePlace(h.google_place_id, token, (mapOpen && mapCenter) || center);
       if (!p) {
         setError(`Couldn't load ${h.name}.`);
         return;
@@ -544,7 +544,7 @@ export default function Nearby() {
 
   // Discover: places you'd like around the map's center. Quick Google results first, then the web.
   async function discover(here?: Point) {
-    const at = here ?? mapCenter ?? center;
+    const at = here ?? ((mapOpen && mapCenter) || center); // with the map hidden, its last position is stale
     if (!at || discovering) return;
     const name = (await areaName(at.lat, at.lng)) ?? placeName ?? undefined;
     const label = name ?? 'here';
@@ -591,6 +591,12 @@ export default function Nearby() {
     discover(center); // where they are now, not wherever the map was before location was allowed
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runDiscoverSoon, center]);
+
+  // a new center (a city, a place, your location) is where the map goes too: don't wait for the map
+  // to report it (it doesn't while hidden), or Discover runs at the old spot
+  useEffect(() => {
+    if (center) setMapCenter(center);
+  }, [center]);
 
   // offer "search this area" once the map has moved away from the last search
   const moved = !!(center && mapCenter && metersBetween(center, mapCenter) > radius * 0.3);
@@ -909,7 +915,7 @@ export default function Nearby() {
       <AddPlace
         visible={showAdd}
         shared={shared}
-        near={mapCenter ?? center}
+        near={(mapOpen && mapCenter) || center}
         onClose={() => {
           setShowAdd(false);
           setShared(null);
@@ -918,7 +924,7 @@ export default function Nearby() {
       />
       <ImportPlaces
         visible={showImport}
-        near={mapCenter ?? center}
+        near={(mapOpen && mapCenter) || center}
         onClose={() => setShowImport(false)}
         onSaved={() => setReload((n) => n + 1)}
       />
