@@ -1,10 +1,11 @@
 import * as Location from 'expo-location';
 import { useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { readTaste, saveTaste, type TasteRead } from '@/lib/onboard';
-import { colors } from '@/lib/theme';
+import { colors, radius } from '@/lib/theme';
+import { Button } from '@/components/ui';
 
 type Props = {
   visible: boolean;
@@ -85,9 +86,7 @@ export default function Onboarding({ visible, onDone }: Props) {
               <Text style={styles.title}>Taste Agent</Text>
               <Text style={styles.lead}>Keep the places you want to try, see them when you're nearby, and find new ones that fit your taste, at home or traveling.</Text>
               <Text style={styles.body}>Start by telling it a few places you love. It takes a minute.</Text>
-              <Pressable style={styles.primary} onPress={() => setStep('location')}>
-                <Text style={styles.primaryText}>Get started</Text>
-              </Pressable>
+              <Button title="Get started" style={styles.mt} onPress={() => setStep('location')} />
             </>
           )}
 
@@ -95,9 +94,7 @@ export default function Onboarding({ visible, onDone }: Props) {
             <>
               <Text style={styles.title}>Your location</Text>
               <Text style={styles.body}>Used to show your places and new picks near you, and to find the right restaurants when you name them. It stays on your phone except for those searches.</Text>
-              <Pressable style={styles.primary} onPress={askLocation}>
-                <Text style={styles.primaryText}>Continue</Text>
-              </Pressable>
+              <Button title="Continue" icon="location.fill" style={styles.mt} onPress={askLocation} />
             </>
           )}
 
@@ -115,9 +112,7 @@ export default function Onboarding({ visible, onDone }: Props) {
                 placeholderTextColor={colors.muted}
               />
               {error && <Text style={styles.error}>{error}</Text>}
-              <Pressable style={[styles.primary, (!text.trim() || busy) && styles.off]} onPress={doRead} disabled={!text.trim() || busy}>
-                {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Next</Text>}
-              </Pressable>
+              <Button title="Next" style={styles.mt} onPress={doRead} busy={busy} disabled={!text.trim()} />
             </>
           )}
 
@@ -148,7 +143,8 @@ export default function Onboarding({ visible, onDone }: Props) {
                   <View style={styles.chips}>
                     {dishes.map((d) => (
                       <Pressable key={d} style={styles.chip} onPress={() => setDishes((x) => x.filter((y) => y !== d))}>
-                        <Text style={styles.chipText}>{d}  ✕</Text>
+                        <Text style={styles.chipText}>{d}</Text>
+                        <Text style={styles.chipX}>✕</Text>
                       </Pressable>
                     ))}
                   </View>
@@ -156,12 +152,8 @@ export default function Onboarding({ visible, onDone }: Props) {
               )}
               {read.cuisines.length > 0 && <Text style={styles.muted}>Cuisines: {read.cuisines.join(', ')}</Text>}
               {error && <Text style={styles.error}>{error}</Text>}
-              <Pressable style={[styles.primary, busy && styles.off]} onPress={() => doSave(false)} disabled={busy}>
-                {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{kept ? `Save ${kept} and show me places` : 'Show me places'}</Text>}
-              </Pressable>
-              <Pressable style={[styles.secondary, busy && styles.off]} onPress={() => doSave(true)} disabled={busy}>
-                <Text style={styles.secondaryText}>Save, then import my Google Maps or Beli lists</Text>
-              </Pressable>
+              <Button title={kept ? `Save ${kept} and show me places` : 'Show me places'} style={styles.mt} onPress={() => doSave(false)} busy={busy} />
+              <Button title="Save, then import my lists" icon="square.and.arrow.down" kind="outline" onPress={() => doSave(true)} disabled={busy} />
               <Pressable onPress={() => setStep('taste')} hitSlop={8}>
                 <Text style={styles.back}>Back</Text>
               </Pressable>
@@ -180,24 +172,21 @@ const styles = StyleSheet.create({
   body: { fontSize: 16, lineHeight: 22, color: colors.text },
   muted: { fontSize: 14, color: colors.muted },
   input: {
-    minHeight: 130, borderWidth: 1, borderColor: colors.line, borderRadius: 12, padding: 12, fontSize: 16,
-    color: colors.text, backgroundColor: '#fff', textAlignVertical: 'top',
+    minHeight: 130, borderWidth: 1, borderColor: colors.line, borderRadius: radius.m, padding: 12, fontSize: 16,
+    color: colors.text, backgroundColor: colors.card, textAlignVertical: 'top',
   },
-  primary: { backgroundColor: colors.accent, borderRadius: 12, paddingVertical: 15, alignItems: 'center', marginTop: 4 },
-  primaryText: { color: '#fff', fontSize: 17, fontWeight: '700' },
-  secondary: { borderWidth: 1.5, borderColor: colors.accent, borderRadius: 12, paddingVertical: 13, alignItems: 'center' },
-  secondaryText: { color: colors.accent, fontSize: 15, fontWeight: '700', textAlign: 'center', paddingHorizontal: 8 },
-  off: { opacity: 0.5 },
-  error: { color: '#B3261E', fontSize: 15 },
+  mt: { marginTop: 4 },
+  error: { color: colors.danger, fontSize: 15 },
   place: { gap: 6, paddingVertical: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
   placeName: { fontSize: 17, fontWeight: '700', color: colors.text },
-  cand: { borderWidth: 1, borderColor: colors.line, borderRadius: 10, padding: 10, backgroundColor: '#fff' },
-  candOn: { borderColor: colors.accent, borderWidth: 2 },
+  cand: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.m, padding: 10, backgroundColor: colors.card },
+  candOn: { borderColor: colors.saved, borderWidth: 2 },
   candName: { fontSize: 15, fontWeight: '600', color: colors.text },
   skip: { fontSize: 14, color: colors.muted, paddingVertical: 2 },
   section: { fontSize: 15, fontWeight: '700', color: colors.text, marginTop: 4 },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  chip: { backgroundColor: colors.line, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6 },
-  chipText: { fontSize: 14, color: colors.text },
+  chip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: radius.pill, paddingHorizontal: 12, height: 34 },
+  chipText: { fontSize: 14, fontWeight: '600', color: colors.text },
+  chipX: { fontSize: 12, color: colors.muted },
   back: { fontSize: 15, color: colors.muted, textAlign: 'center', paddingVertical: 6 },
 });

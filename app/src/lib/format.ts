@@ -127,6 +127,12 @@ export function sourceLine(p: NearbyPlace): string | null {
 }
 
 // Waze app if installed, otherwise the Waze web page; starts navigation to the place
+// Yelp search for this name at this spot (Yelp has no lookup by Google ID); opens the Yelp app if installed
+export function yelpUrl(p: NearbyPlace): string {
+  const where = p.address || `${p.place_lat},${p.place_lng}`;
+  return `https://www.yelp.com/search?find_desc=${encodeURIComponent(p.name)}&find_loc=${encodeURIComponent(where)}`;
+}
+
 export function wazeUrl(p: NearbyPlace): string {
   return `https://waze.com/ul?ll=${p.place_lat},${p.place_lng}&navigate=yes`;
 }

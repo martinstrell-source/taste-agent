@@ -17,7 +17,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { getPhoto } from '@/lib/capture';
 import type { NearbyPlace } from '@/lib/supabase';
-import { colors } from '@/lib/theme';
+import { colors, radius } from '@/lib/theme';
+import { Button, Segmented } from '@/components/ui';
 import { readBill, REACTION_LABEL, saveVisit, type BillItem, type Reaction } from '@/lib/visits';
 
 type Photo = { base64: string; uri: string };
@@ -132,28 +133,25 @@ export default function LogVisit({ place, onClose, onSaved }: { place: NearbyPla
             {place?.name}
           </Text>
           <Pressable onPress={onClose} hitSlop={10}>
-            <Text style={styles.link}>Cancel</Text>
+            <Text style={styles.cancel}>Cancel</Text>
           </Pressable>
         </View>
 
         <ScrollView contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + 24 }]} keyboardShouldPersistTaps="handled">
           <Text style={styles.label}>When</Text>
-          <View style={styles.row}>
-            {(['today', 'yesterday', 'other'] as const).map((m) => (
-              <Pressable
-                key={m}
-                onPress={() => {
-                  setDateMode(m);
-                  if (m === 'today') setDate(isoDay());
-                  if (m === 'yesterday') setDate(isoDay(-1));
-                }}
-                style={[styles.chip, dateMode === m && styles.chipOn]}>
-                <Text style={[styles.chipText, dateMode === m && styles.chipTextOn]}>
-                  {m === 'today' ? 'Today' : m === 'yesterday' ? 'Yesterday' : 'Earlier'}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
+          <Segmented
+            options={[
+              { value: 'today' as const, label: 'Today' },
+              { value: 'yesterday' as const, label: 'Yesterday' },
+              { value: 'other' as const, label: 'Earlier' },
+            ]}
+            value={dateMode}
+            onChange={(m) => {
+              setDateMode(m);
+              if (m === 'today') setDate(isoDay());
+              if (m === 'yesterday') setDate(isoDay(-1));
+            }}
+          />
           {dateMode === 'other' && (
             <TextInput style={styles.input} value={date} onChangeText={setDate} placeholder="2026-10-21" keyboardType="numbers-and-punctuation" />
           )}
@@ -180,12 +178,8 @@ export default function LogVisit({ place, onClose, onSaved }: { place: NearbyPla
           <Text style={styles.label}>The bill</Text>
           {!bill ? (
             <View style={styles.row}>
-              <Pressable style={styles.secondary} onPress={() => addBill(true)}>
-                <Text style={styles.secondaryText}>Photo of the bill</Text>
-              </Pressable>
-              <Pressable style={styles.secondary} onPress={() => addBill(false)}>
-                <Text style={styles.secondaryText}>Choose photo</Text>
-              </Pressable>
+              <Button title="Photo of the bill" icon="camera" kind="secondary" style={{ flex: 1 }} onPress={() => addBill(true)} />
+              <Button title="Choose photo" icon="photo" kind="secondary" style={{ flex: 1 }} onPress={() => addBill(false)} />
             </View>
           ) : (
             <View style={{ gap: 8 }}>
@@ -212,7 +206,7 @@ export default function LogVisit({ place, onClose, onSaved }: { place: NearbyPla
                     </View>
                   ))}
                   <Pressable onPress={() => setItems((l) => [...l, { name: '', qty: 1, price: null }])}>
-                    <Text style={styles.link}>+ Add an item</Text>
+                    <Text style={styles.addItem}>+ Add an item</Text>
                   </Pressable>
                   <Text style={styles.muted}>
                     Items ${sum.toFixed(2)}
@@ -240,20 +234,14 @@ export default function LogVisit({ place, onClose, onSaved }: { place: NearbyPla
           )}
           {food.length < MAX_FOOD && (
             <View style={styles.row}>
-              <Pressable style={styles.secondary} onPress={() => addFood(true)}>
-                <Text style={styles.secondaryText}>Take a photo</Text>
-              </Pressable>
-              <Pressable style={styles.secondary} onPress={() => addFood(false)}>
-                <Text style={styles.secondaryText}>Choose photo</Text>
-              </Pressable>
+              <Button title="Take a photo" icon="camera" kind="secondary" style={{ flex: 1 }} onPress={() => addFood(true)} />
+              <Button title="Choose photo" icon="photo" kind="secondary" style={{ flex: 1 }} onPress={() => addFood(false)} />
             </View>
           )}
           {food.length > 0 && <Text style={styles.small}>Press and hold a photo to remove it.</Text>}
 
           {error && <Text style={styles.error}>{error}</Text>}
-          <Pressable style={[styles.primary, (!reaction || saving || reading) && { opacity: 0.5 }]} onPress={save} disabled={!reaction || saving || reading}>
-            {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Save visit</Text>}
-          </Pressable>
+          <Button title="Save visit" style={{ marginTop: 8 }} onPress={save} busy={saving} disabled={!reaction || reading} />
           {!reaction && <Text style={styles.small}>Pick how it was to save.</Text>}
         </ScrollView>
       </KeyboardAvoidingView>
@@ -264,24 +252,19 @@ export default function LogVisit({ place, onClose, onSaved }: { place: NearbyPla
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, paddingBottom: 8, gap: 12 },
-  title: { flex: 1, fontSize: 22, fontWeight: '700', color: colors.text },
-  link: { color: colors.accent, fontSize: 16, fontWeight: '600' },
+  title: { flex: 1, fontSize: 24, fontWeight: '800', color: colors.text },
+  cancel: { color: colors.text, fontSize: 17, fontWeight: '600' },
+  addItem: { color: colors.saved, fontSize: 15, fontWeight: '700' },
   body: { paddingHorizontal: 16, gap: 10 },
-  label: { fontSize: 13, fontWeight: '700', color: colors.muted, marginTop: 8, textTransform: 'uppercase' },
+  label: { fontSize: 15, fontWeight: '700', color: colors.text, marginTop: 10 },
   row: { flexDirection: 'row', gap: 8, alignItems: 'center' },
-  chip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 16, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.card },
-  chipOn: { backgroundColor: colors.text, borderColor: colors.text },
-  chipText: { fontSize: 15, color: colors.text },
-  chipTextOn: { color: '#fff', fontWeight: '600' },
-  react: { flex: 1, paddingVertical: 12, borderRadius: 10, backgroundColor: '#EFE8DD', alignItems: 'center' },
+  react: { flex: 1, paddingVertical: 12, borderRadius: radius.m, backgroundColor: colors.soft, alignItems: 'center' },
   react_love: { backgroundColor: colors.saved },
   react_fine: { backgroundColor: colors.muted },
   react_no: { backgroundColor: colors.danger },
   reactText: { fontSize: 15, fontWeight: '600', color: colors.text },
-  input: { backgroundColor: colors.card, borderColor: colors.line, borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9, fontSize: 16, color: colors.text },
+  input: { backgroundColor: colors.card, borderColor: colors.line, borderWidth: 1, borderRadius: radius.m, paddingHorizontal: 12, paddingVertical: 9, fontSize: 16, color: colors.text },
   multi: { minHeight: 90, textAlignVertical: 'top' },
-  secondary: { flex: 1, backgroundColor: '#EFE8DD', borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
-  secondaryText: { fontSize: 15, fontWeight: '600', color: colors.text },
   itemRow: { flexDirection: 'row', gap: 6, alignItems: 'center' },
   itemName: { flex: 1, paddingVertical: 7 },
   itemPrice: { width: 80, paddingVertical: 7, textAlign: 'right' },
@@ -292,6 +275,4 @@ const styles = StyleSheet.create({
   small: { fontSize: 12, color: colors.muted },
   thumb: { width: 84, height: 84, borderRadius: 8, backgroundColor: colors.line },
   error: { color: colors.danger, fontSize: 15 },
-  primary: { backgroundColor: colors.accent, borderRadius: 10, paddingVertical: 14, alignItems: 'center', marginTop: 8 },
-  primaryText: { color: '#fff', fontSize: 17, fontWeight: '600' },
 });

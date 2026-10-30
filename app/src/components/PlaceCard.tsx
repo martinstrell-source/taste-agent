@@ -12,13 +12,15 @@ import {
   ratingText,
   sourceLine,
   wazeUrl,
+  yelpUrl,
 } from '@/lib/format';
 import type { HideReason } from '@/lib/hide';
 import { pickMentions, type Mention } from '@/lib/picks';
 import { isOpenNow, todaysHours } from '@/lib/hours';
 import { fetchPlaceDetails, type NearbyPlace, type PlaceDetails } from '@/lib/supabase';
 import { listVisits, REACTION_LABEL, type Visit } from '@/lib/visits';
-import { colors, groupColor } from '@/lib/theme';
+import { colors, groupColor, radius } from '@/lib/theme';
+import { Button, Icon } from '@/components/ui';
 
 type Props = {
   place: NearbyPlace | null;
@@ -111,7 +113,8 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
                   hitSlop={10}
                   style={[styles.starBtn, starred && styles.starBtnOn]}
                   accessibilityLabel={starred ? 'Remove star' : 'Star: show at the top of Best match'}>
-                  <Text style={[styles.starText, starred && { color: '#fff' }]}>{starred ? '★ Starred' : '☆ Star'}</Text>
+                  <Icon name={starred ? 'star.fill' : 'star'} color={starred ? '#fff' : colors.star} size={14} />
+                  <Text style={[styles.starText, starred && { color: '#fff' }]}>{starred ? 'Starred' : 'Star'}</Text>
                 </Pressable>
               )}
             </View>
@@ -186,47 +189,32 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
           </ScrollView>
 
           <View style={styles.hideRow}>
-            <Pressable
-              style={({ pressed }) => [styles.button, { flex: 2 }, pressed && { opacity: 0.7 }]}
-              onPress={() => Linking.openURL(mapsUrl(place))}>
-              <Text style={styles.buttonText}>Google Maps</Text>
-            </Pressable>
-            <Pressable
-              style={({ pressed }) => [styles.button, styles.wazeBtn, pressed && { opacity: 0.7 }]}
-              onPress={() => Linking.openURL(wazeUrl(place))}>
-              <Text style={styles.buttonText}>Waze</Text>
-            </Pressable>
+            <Button title="Google Maps" icon="arrow.triangle.turn.up.right.diamond.fill" style={{ flex: 2.2 }} onPress={() => Linking.openURL(mapsUrl(place))} />
+            <Button title="Waze" kind="secondary" style={{ flex: 1 }} onPress={() => Linking.openURL(wazeUrl(place))} />
+            <Button title="Yelp" kind="secondary" style={{ flex: 1 }} onPress={() => Linking.openURL(yelpUrl(place))} />
           </View>
-          <Pressable style={styles.moveBtn} onPress={() => onLogVisit(place)}>
-            <Text style={styles.hideText}>I went: log a visit</Text>
-          </Pressable>
           {place.kind === 'pick' && (
             <View style={styles.hideRow}>
-              <Pressable style={[styles.hideBtn, styles.wantBtn]} onPress={() => onPick(place, 'want')}>
-                <Text style={[styles.hideText, { color: '#fff' }]}>Want to go</Text>
-              </Pressable>
-              <Pressable style={styles.hideBtn} onPress={() => onPick(place, 'not_interested')}>
-                <Text style={styles.hideText}>Not interested</Text>
-              </Pressable>
+              <Button title="Want to go" icon="plus" kind="tinted" color={colors.saved} style={{ flex: 1 }} onPress={() => onPick(place, 'want')} />
+              <Button title="Not interested" kind="secondary" style={{ flex: 1 }} onPress={() => onPick(place, 'not_interested')} />
             </View>
           )}
-          {place.kind === 'saved' && (
-            <Pressable
-              style={styles.moveBtn}
-              onPress={() => onMove(place, place.list_name === 'favorites' ? 'want_to_go' : 'favorites')}>
-              <Text style={styles.hideText}>
-                {place.list_name === 'favorites' ? 'Move to Want to go' : 'Move to Favorites'}
-              </Text>
-            </Pressable>
-          )}
+          <View style={styles.hideRow}>
+            <Button title="Log a visit" icon="checkmark.circle" kind="outline" style={{ flex: 1 }} onPress={() => onLogVisit(place)} />
+            {place.kind === 'saved' && (
+              <Button
+                title={place.list_name === 'favorites' ? 'To Want to go' : 'To Favorites'}
+                icon={place.list_name === 'favorites' ? 'bookmark' : 'heart'}
+                kind="outline"
+                style={{ flex: 1 }}
+                onPress={() => onMove(place, place.list_name === 'favorites' ? 'want_to_go' : 'favorites')}
+              />
+            )}
+          </View>
           {place.kind === 'saved' && (
             <View style={styles.hideRow}>
-              <Pressable style={styles.hideBtn} onPress={() => onHide(place, 'closed')}>
-                <Text style={styles.hideText}>Permanently closed</Text>
-              </Pressable>
-              <Pressable style={styles.hideBtn} onPress={() => onHide(place, 'didnt_like')}>
-                <Text style={styles.hideText}>Tried it, didn't like it</Text>
-              </Pressable>
+              <Button title="Closed for good" kind="secondary" small style={{ flex: 1 }} onPress={() => onHide(place, 'closed')} />
+              <Button title="Didn't like it" kind="secondary" small style={{ flex: 1 }} onPress={() => onHide(place, 'didnt_like')} />
             </View>
           )}
         </View>
@@ -239,8 +227,8 @@ const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.25)' },
   sheet: {
     backgroundColor: colors.card,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     paddingHorizontal: 20,
     paddingTop: 8,
     maxHeight: '75%',
@@ -248,10 +236,10 @@ const styles = StyleSheet.create({
   },
   handle: { alignSelf: 'center', width: 40, height: 5, borderRadius: 3, backgroundColor: colors.line, marginBottom: 8 },
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  badge: { color: '#fff', fontSize: 13, fontWeight: '600', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, overflow: 'hidden' },
-  name: { fontSize: 22, fontWeight: '700', color: colors.text },
+  badge: { color: '#fff', fontSize: 13, fontWeight: '600', paddingHorizontal: 8, paddingVertical: 3, borderRadius: radius.pill, overflow: 'hidden' },
+  name: { fontSize: 24, fontWeight: '800', color: colors.text, letterSpacing: -0.3 },
   nameRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  starBtn: { borderWidth: 1.5, borderColor: colors.star, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6 },
+  starBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, borderWidth: 1.5, borderColor: colors.star, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 6 },
   starBtnOn: { backgroundColor: colors.star },
   starText: { fontSize: 15, fontWeight: '700', color: colors.star },
   factsRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 12 },
@@ -259,36 +247,14 @@ const styles = StyleSheet.create({
   text: { fontSize: 16, color: colors.text, lineHeight: 22 },
   muted: { fontSize: 15, color: colors.muted, fontWeight: '400' },
   source: { fontSize: 14, color: colors.muted, fontStyle: 'italic' },
-  noteBox: { backgroundColor: colors.bg, borderRadius: 10, padding: 12, gap: 4, marginTop: 4 },
+  noteBox: { backgroundColor: colors.bg, borderRadius: radius.m, padding: 12, gap: 4, marginTop: 4 },
   noteLabel: { fontSize: 13, fontWeight: '600', color: colors.muted },
-  button: { backgroundColor: colors.accent, borderRadius: 10, paddingVertical: 14, alignItems: 'center' },
-  buttonText: { color: '#fff', fontSize: 17, fontWeight: '600' },
   hideRow: { flexDirection: 'row', gap: 10 },
-  // secondary buttons: filled and bold so they read as buttons, but quieter than Open in Maps
-  hideBtn: {
-    flex: 1,
-    backgroundColor: '#EFE8DD',
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  hideText: { color: colors.text, fontSize: 15, fontWeight: '600', textAlign: 'center' },
-  wantBtn: { backgroundColor: colors.saved },
   why: { fontSize: 15, fontWeight: '600', color: colors.pick },
   visit: { gap: 3, paddingVertical: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
   visitHead: { fontSize: 15, fontWeight: '600', color: colors.text },
   thumb: { width: 72, height: 72, borderRadius: 8, backgroundColor: colors.line },
-  wazeBtn: { flex: 1, backgroundColor: '#33CCFF' },
   mention: { gap: 2, paddingTop: 2 },
   mentionSource: { fontSize: 15, fontWeight: '600', color: colors.text },
   link: { color: colors.accent, fontSize: 15, fontWeight: '600' },
-  // full width on its own line; no flex:1 here (in a column that squeezes the button and hides its label)
-  moveBtn: {
-    backgroundColor: '#EFE8DD',
-    borderRadius: 10,
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
 });

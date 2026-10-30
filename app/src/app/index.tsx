@@ -19,6 +19,7 @@ import MapView, { Marker, PROVIDER_GOOGLE, type Region } from 'react-native-maps
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import AddPlace, { type Shared } from '@/components/AddPlace';
+import { Button, Chip, Icon, IconButton, Segmented } from '@/components/ui';
 import HiddenList from '@/components/HiddenList';
 import ImportPlaces from '@/components/ImportPlaces';
 import Onboarding from '@/components/Onboarding';
@@ -49,7 +50,7 @@ import { suggestPlaces, type Suggestion } from '@/lib/places-search';
 import { googlePlace, newSession, searchGoogle, searchSaves, type GoogleHit } from '@/lib/search';
 import { isOpenNow } from '@/lib/hours';
 import { fetchNearby, fetchPlaceDetails, supabase, type NearbyPlace, type PlaceDetails } from '@/lib/supabase';
-import { colors, groupColor } from '@/lib/theme';
+import { colors, groupColor, radius as corner } from '@/lib/theme';
 
 const RADII = [1000, 3000, 10000];
 const GROUPS: Group[] = ['favorites', 'want_to_go', 'other', 'pick'];
@@ -568,19 +569,12 @@ export default function Nearby() {
         <Text style={styles.title} numberOfLines={1}>
           {placeName ? placeName : 'Nearby'}
         </Text>
-        <Pressable
-          style={[styles.addBtn, styles.discoverBtn, !!discovering && { opacity: 0.6 }]}
-          onPress={discover}
-          disabled={!!discovering}
-          accessibilityLabel="Discover places here">
-          <Text style={styles.addText}>Discover</Text>
-        </Pressable>
-        <Pressable style={styles.addBtn} onPress={() => setShowAdd(true)} accessibilityLabel="Add a place">
-          <Text style={styles.addText}>+ Add</Text>
-        </Pressable>
+        <Button title="Discover" icon="sparkles" kind="tinted" color={colors.pick} small onPress={discover} disabled={!!discovering} />
+        <IconButton name="plus" label="Add a place" onPress={() => setShowAdd(true)} />
       </View>
 
       <View style={styles.searchRow}>
+        <Icon name="magnifyingglass" color={colors.muted} size={16} />
         <TextInput
           style={styles.search}
           value={query}
@@ -678,6 +672,7 @@ export default function Nearby() {
               setPlaceName('This area');
               setCenter(mapCenter);
             }}>
+            <Icon name="arrow.clockwise" color="#fff" size={13} />
             <Text style={styles.searchHereText}>Search this area</Text>
           </Pressable>
         )}
@@ -689,82 +684,73 @@ export default function Nearby() {
           }}
           hitSlop={8}
           accessibilityLabel="My location">
-          <Text style={styles.locateText}>◎</Text>
+          <Icon name="location.fill" color={colors.text} size={17} />
         </Pressable>
       </View>
       )}
 
-      {/* radius, groups, and a Filters button; wraps on narrow phones */}
+      {/* lists to show, then map, location, radius and filters */}
       <View style={styles.controls}>
-        <Pressable onPress={toggleMap} style={styles.toggle} hitSlop={4}>
-          <Text style={styles.toggleText}>{mapOpen ? 'Hide map' : 'Map'}</Text>
-        </Pressable>
-        {!mapOpen && (
-          <Pressable
-            onPress={() => {
-              setQuery('');
-              locate();
-            }}
-            style={styles.toggle}
-            accessibilityLabel="My location">
-            <Text style={[styles.toggleText, { color: colors.accent }]}>◎</Text>
-          </Pressable>
-        )}
-        <View style={styles.segment}>
-          {RADII.map((r) => (
-            <Pressable key={r} onPress={() => setRadius(r)} style={[styles.segItem, radius === r && styles.segOn]}>
-              <Text style={[styles.segText, radius === r && styles.segTextOn]}>{formatDistance(r)}</Text>
-            </Pressable>
+        <View style={styles.chipRow}>
+          {GROUPS.filter((g) => g !== 'other' || byGroup.other > 0).map((g) => (
+            <Chip key={g} label={`${GROUP_LABEL[g]} ${byGroup[g]}`} color={groupColor[g]} on={!hiddenGroups.has(g)} onPress={() => toggleGroup(g)} />
           ))}
         </View>
-        {GROUPS.filter((g) => g !== 'other' || byGroup.other > 0).map((g) => {
-          const on = !hiddenGroups.has(g);
-          return (
+        <View style={styles.toolRow}>
+          <Pressable onPress={toggleMap} style={[styles.tool, mapOpen && styles.toolOn]} accessibilityLabel={mapOpen ? 'Hide map' : 'Show map'} hitSlop={4}>
+            <Icon name={mapOpen ? 'map.fill' : 'map'} color={mapOpen ? '#fff' : colors.text} size={16} />
+          </Pressable>
+          {!mapOpen && (
             <Pressable
-              key={g}
-              onPress={() => toggleGroup(g)}
-              style={[styles.toggle, on ? { backgroundColor: groupColor[g], borderColor: groupColor[g] } : null]}>
-              <Text style={[styles.toggleText, on && styles.toggleTextOn]}>
-                {GROUP_LABEL[g]} {byGroup[g]}
-              </Text>
+              onPress={() => {
+                setQuery('');
+                locate();
+              }}
+              style={styles.tool}
+              accessibilityLabel="My location"
+              hitSlop={4}>
+              <Icon name="location.fill" color={colors.text} size={15} />
             </Pressable>
-          );
-        })}
-        <Pressable onPress={() => setShowFilters((s) => !s)} style={[styles.toggle, activeFilters > 0 && styles.filterOn]}>
-          <Text style={[styles.toggleText, activeFilters > 0 && styles.toggleTextOn]}>
-            Filters{activeFilters ? ` ${activeFilters}` : ''} {showFilters ? '▴' : '▾'}
-          </Text>
-        </Pressable>
+          )}
+          <Segmented
+            style={{ flex: 1 }}
+            options={RADII.map((r) => ({ value: r, label: formatDistance(r) }))}
+            value={radius}
+            onChange={setRadius}
+          />
+          <Pressable
+            onPress={() => setShowFilters((x) => !x)}
+            style={[styles.tool, styles.filterTool, (showFilters || activeFilters > 0) && styles.toolOn]}
+            accessibilityLabel="Filters">
+            <Icon name="line.3.horizontal.decrease" color={showFilters || activeFilters > 0 ? '#fff' : colors.text} size={15} />
+            {activeFilters > 0 && <Text style={styles.filterCount}>{activeFilters}</Text>}
+          </Pressable>
+        </View>
       </View>
 
       {showFilters && (
         <View style={styles.filters}>
           <View style={styles.filterRow}>
             <Text style={styles.filterLabel}>Sort</Text>
-            <View style={styles.segment}>
-              {(['near', 'match'] as const).map((s) => (
-                <Pressable key={s} onPress={() => chooseSort(s)} style={[styles.segItem, sort === s && styles.segOn]}>
-                  <Text style={[styles.segText, sort === s && styles.segTextOn]}>{s === 'near' ? 'Nearest' : 'Best match'}</Text>
-                </Pressable>
-              ))}
-            </View>
+            <Segmented
+              style={{ flex: 1 }}
+              options={[
+                { value: 'near' as const, label: 'Nearest' },
+                { value: 'match' as const, label: 'Best match' },
+              ]}
+              value={sort}
+              onChange={chooseSort}
+            />
           </View>
           <View style={styles.filterRow}>
-            {KINDS.map((k) => (
-              <Pressable key={k.key} onPress={() => setKind(k.key)} style={[styles.toggle, kind === k.key && styles.filterOn]}>
-                <Text style={[styles.toggleText, kind === k.key && styles.toggleTextOn]}>{k.label}</Text>
-              </Pressable>
-            ))}
+            <Text style={styles.filterLabel}>Show</Text>
+            <Segmented style={{ flex: 1 }} options={KINDS.map((k) => ({ value: k.key, label: k.label }))} value={kind} onChange={setKind} />
           </View>
           <View style={styles.filterRow}>
             {PRICE_STEPS.map((p) => (
-              <Pressable key={p} onPress={() => togglePrice(p)} style={[styles.toggle, prices.has(p) && styles.filterOn]}>
-                <Text style={[styles.toggleText, prices.has(p) && styles.toggleTextOn]}>{p}</Text>
-              </Pressable>
+              <Chip key={p} label={p} on={prices.has(p)} onPress={() => togglePrice(p)} />
             ))}
-            <Pressable onPress={() => setOpenNow((o) => !o)} style={[styles.toggle, openNow && styles.filterOn]}>
-              <Text style={[styles.toggleText, openNow && styles.toggleTextOn]}>Open now</Text>
-            </Pressable>
+            <Chip label="Open now" icon="clock" on={openNow} onPress={() => setOpenNow((o) => !o)} />
             {checking && <ActivityIndicator size="small" />}
           </View>
           {needDetails && unknown > 0 && !checking && (
@@ -813,15 +799,9 @@ export default function Nearby() {
           }
           ListFooterComponent={
             <View style={styles.footer}>
-              <Pressable onPress={() => setShowImport(true)} hitSlop={8}>
-                <Text style={styles.footerText}>Import places</Text>
-              </Pressable>
-              <Pressable onPress={() => setShowHidden(true)} hitSlop={8}>
-                <Text style={styles.footerText}>Hidden places</Text>
-              </Pressable>
-              <Pressable onPress={() => supabase.auth.signOut()} hitSlop={8}>
-                <Text style={styles.footerText}>Sign out</Text>
-              </Pressable>
+              <Button title="Import places" icon="square.and.arrow.down" kind="secondary" small onPress={() => setShowImport(true)} />
+              <Button title="Hidden places" icon="eye.slash" kind="secondary" small onPress={() => setShowHidden(true)} />
+              <Button title="Sign out" kind="secondary" small onPress={() => supabase.auth.signOut()} />
             </View>
           }
           renderItem={({ item }) => <Row place={item} starred={isStarred(item, starred)} onPress={() => setSelected(item)} />}
@@ -935,25 +915,24 @@ const shadow = {
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
-  header: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 6, flexDirection: 'row', alignItems: 'center', gap: 12 },
-  title: { flex: 1, fontSize: 28, fontWeight: '700', color: colors.text },
-  addBtn: { backgroundColor: colors.accent, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 7 },
-  addText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  discoverBtn: { backgroundColor: colors.pick },
-  discovering: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 8, backgroundColor: '#FFF4E3' },
+  header: { paddingHorizontal: 16, paddingTop: 6, paddingBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  title: { flex: 1, fontSize: 30, fontWeight: '800', color: colors.text, letterSpacing: -0.5 },
+  discovering: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 8, backgroundColor: colors.starBg },
   discoveringText: { flex: 1, fontSize: 14, color: colors.text },
-  searchRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingBottom: 8 },
-  search: {
-    flex: 1,
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginBottom: 10,
+    paddingLeft: 12,
+    paddingRight: 6,
     backgroundColor: colors.card,
-    borderColor: colors.line,
+    borderRadius: corner.m,
     borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    fontSize: 16,
-    color: colors.text,
+    borderColor: colors.line,
   },
+  search: { flex: 1, paddingVertical: 11, fontSize: 16, color: colors.text },
   mapWrap: { height: '33%', backgroundColor: colors.line },
   suggestAnchor: { zIndex: 20, elevation: 20 },
   suggestBox: {
@@ -983,13 +962,16 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 12,
     alignSelf: 'center',
-    backgroundColor: colors.card,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.accent,
     paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 20,
+    borderRadius: corner.pill,
     ...shadow,
   },
-  searchHereText: { color: colors.accent, fontWeight: '600', fontSize: 15 },
+  searchHereText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   locateBtn: {
     position: 'absolute',
     right: 12,
@@ -1002,40 +984,26 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     ...shadow,
   },
-  locateText: { fontSize: 22, color: colors.accent, lineHeight: 26 },
   controls: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    alignItems: 'center',
-    paddingHorizontal: 12,
+    gap: 10,
+    paddingHorizontal: 16,
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.line,
   },
-  segment: {
-    flexDirection: 'row',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.card,
-    overflow: 'hidden',
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  toolRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  tool: {
+    height: 34,
+    minWidth: 34,
+    borderRadius: corner.s + 2,
+    backgroundColor: colors.soft,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  segItem: { paddingHorizontal: 10, paddingVertical: 6 },
-  segOn: { backgroundColor: colors.text },
-  segText: { fontSize: 14, color: colors.text },
-  segTextOn: { color: '#fff', fontWeight: '600' },
-  toggle: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.line,
-    backgroundColor: colors.card,
-  },
-  toggleText: { fontSize: 14, color: colors.muted },
-  toggleTextOn: { color: '#fff', fontWeight: '600' },
-  filterOn: { backgroundColor: colors.text, borderColor: colors.text },
+  toolOn: { backgroundColor: colors.accent },
+  filterTool: { flexDirection: 'row', gap: 5, paddingHorizontal: 10 },
+  filterCount: { color: '#fff', fontSize: 13, fontWeight: '700' },
   filters: {
     paddingHorizontal: 12,
     paddingVertical: 10,
@@ -1046,22 +1014,21 @@ const styles = StyleSheet.create({
   },
   filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
   hint: { fontSize: 13, color: colors.muted },
-  filterLabel: { fontSize: 13, fontWeight: '600', color: colors.muted, marginRight: 2 },
-  notice: { margin: 16, marginBottom: 0, padding: 12, borderRadius: 10, backgroundColor: '#FFF1E0' },
+  filterLabel: { width: 40, fontSize: 13, fontWeight: '600', color: colors.muted },
+  notice: { margin: 16, marginBottom: 0, padding: 12, borderRadius: corner.m, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line },
   noticeText: { color: colors.text, fontSize: 14 },
   error: { color: colors.danger, paddingHorizontal: 16, paddingTop: 8 },
   row: { flexDirection: 'row', gap: 12, paddingHorizontal: 16, paddingVertical: 12, alignItems: 'flex-start' },
   rowTop: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
   dot: { width: 10, height: 10, borderRadius: 5, marginTop: 6 },
-  name: { flex: 1, fontSize: 17, fontWeight: '600', color: colors.text },
+  name: { flex: 1, fontSize: 17, fontWeight: '700', color: colors.text },
   dist: { fontSize: 14, color: colors.muted },
   meta: { fontSize: 14, color: colors.muted },
   note: { fontSize: 14, color: colors.text },
   why: { fontSize: 14, color: colors.pick, fontWeight: '600' },
   sep: { height: StyleSheet.hairlineWidth, backgroundColor: colors.line, marginLeft: 38 },
   empty: { textAlign: 'center', color: colors.muted, marginTop: 24, paddingHorizontal: 24 },
-  footer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', columnGap: 22, rowGap: 12, marginTop: 24, padding: 8 },
-  footerText: { color: colors.muted, fontSize: 14 },
+  footer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8, marginTop: 28, padding: 8 },
   undo: {
     position: 'absolute',
     left: 16,
@@ -1078,5 +1045,5 @@ const styles = StyleSheet.create({
     ...shadow,
   },
   undoText: { color: '#fff', fontSize: 15, flex: 1 },
-  undoBtn: { color: '#FFD9A8', fontSize: 15, fontWeight: '700' },
+  undoBtn: { color: colors.star, fontSize: 15, fontWeight: '700' },
 });

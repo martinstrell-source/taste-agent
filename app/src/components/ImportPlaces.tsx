@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Linking, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { runCapture, saveCapture, type Candidate, type Source } from '@/lib/capture';
 import { getJob, latestTakeout, pickScreenshots, readListText, readScreenshot, startTakeoutImport, type ImportJob, type ShotResult } from '@/lib/onboard';
-import { colors } from '@/lib/theme';
+import { colors, radius } from '@/lib/theme';
+import { Button, Segmented, SheetHeader } from '@/components/ui';
 
 type Props = {
   visible: boolean;
@@ -193,27 +194,16 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
       <View style={[styles.wrap, { paddingBottom: insets.bottom + 12 }]}>
-        <View style={styles.head}>
-          <Text style={styles.title}>Import places</Text>
-          <Pressable onPress={close} hitSlop={10}>
-            <Text style={styles.done}>Done</Text>
-          </Pressable>
-        </View>
-        <View style={styles.tabs}>
-          {TABS.map((t, i) => (
-            <Pressable
-              key={t.key}
-              style={({ pressed }) => [styles.tab, i > 0 && styles.tabDivider, tab === t.key && styles.tabOn, pressed && tab !== t.key && styles.tabPressed]}
-              onPress={() => {
-                setTab(t.key);
-                setError(null);
-              }}>
-              <Text style={[styles.tabText, tab === t.key && styles.tabTextOn]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
-                {t.label}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
+        <SheetHeader title="Import places" action="Done" onAction={close} />
+        <Segmented
+          style={styles.tabs}
+          options={TABS.map((t) => ({ value: t.key, label: t.label }))}
+          value={tab}
+          onChange={(k) => {
+            setTab(k);
+            setError(null);
+          }}
+        />
         {error && <Text style={styles.error}>{error}</Text>}
 
         {tab === 'maps' && (
@@ -227,9 +217,7 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
             <Text style={styles.step}>3. Next step: export once, as a .zip. Create export.</Text>
             <Text style={styles.step}>4. Google emails you when it's ready (minutes to an hour). Download the .zip on this phone.</Text>
             <Text style={styles.step}>5. Come back here and choose the file.</Text>
-            <Pressable style={[styles.primary, (uploading || !!running) && styles.off]} onPress={upload} disabled={uploading || !!running}>
-              {uploading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Choose the Takeout file</Text>}
-            </Pressable>
+            <Button title="Choose the Takeout file" icon="doc.zipper" onPress={upload} busy={uploading} disabled={(uploading || !!running)} />
             {job && (
               <View style={styles.job}>
                 <Text style={styles.jobHead}>
@@ -257,19 +245,12 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
                   autoCorrect={false}
                   keyboardType="url"
                 />
-                <Pressable
-                  style={[styles.primary, (!!progress || !/^https?:\/\//i.test(link.trim())) && styles.off]}
-                  onPress={fromLink}
-                  disabled={!!progress || !/^https?:\/\//i.test(link.trim())}>
-                  {progress ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Find the places</Text>}
-                </Pressable>
+                <Button title="Find the places" icon="magnifyingglass" onPress={fromLink} busy={!!progress} disabled={(!!progress || !/^https?:\/\//i.test(link.trim()))} />
               </>
             ) : tab === 'shots' ? (
               <>
                 <Text style={styles.p}>For lists in apps without an export, like Beli or Yelp collections: take screenshots of the list, then choose them here (up to 10 at a time).</Text>
-                <Pressable style={[styles.primary, !!progress && styles.off]} onPress={screenshots} disabled={!!progress}>
-                  {progress ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{rows.length ? 'Add more screenshots' : 'Choose screenshots'}</Text>}
-                </Pressable>
+                <Button title={rows.length ? 'Add more screenshots' : 'Choose screenshots'} icon="photo.on.rectangle" onPress={screenshots} busy={!!progress} disabled={!!progress} />
               </>
             ) : (
               <>
@@ -282,9 +263,7 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
                   placeholder={'Nopa\nDelfina (Mission)\nTacos el Gordo, Las Vegas'}
                   placeholderTextColor={colors.muted}
                 />
-                <Pressable style={[styles.primary, (!!progress || !pasted.trim()) && styles.off]} onPress={fromText} disabled={!!progress || !pasted.trim()}>
-                  {progress ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Find these places</Text>}
-                </Pressable>
+                <Button title="Find these places" icon="magnifyingglass" onPress={fromText} busy={!!progress} disabled={(!!progress || !pasted.trim())} />
               </>
             )}
             {!!progress && <Text style={styles.muted}>{progress}</Text>}
@@ -293,13 +272,14 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
                 <Text style={styles.p}>
                   {rows.length} places{app ? ` from ${app}` : ''}. Tap the right match, or Skip.
                 </Text>
-                <View style={styles.seg}>
-                  {(['want_to_go', 'favorites'] as const).map((l) => (
-                    <Pressable key={l} style={[styles.segBtn, list === l && styles.segOn]} onPress={() => setList(l)}>
-                      <Text style={[styles.segText, list === l && styles.segTextOn]}>{l === 'want_to_go' ? 'Save to Want to go' : 'Save to Favorites'}</Text>
-                    </Pressable>
-                  ))}
-                </View>
+                <Segmented
+                  options={[
+                    { value: 'want_to_go' as const, label: 'Save to Want to go' },
+                    { value: 'favorites' as const, label: 'Save to Favorites' },
+                  ]}
+                  value={list}
+                  onChange={setList}
+                />
                 {rows.map((r, i) => (
                   <View key={`${r.name}-${i}`} style={styles.place}>
                     <Text style={styles.placeName}>
@@ -335,9 +315,7 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
           <View style={styles.footer}>
             {savedCount != null && <Text style={styles.muted}>Saved {savedCount}.</Text>}
             {toSave > 0 && (
-              <Pressable style={[styles.primary, saving && styles.off]} onPress={saveAll} disabled={saving}>
-                {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Save {toSave} places</Text>}
-              </Pressable>
+              <Button title={`Save ${toSave} places`} icon="bookmark.fill" kind="tinted" color={colors.saved} onPress={saveAll} busy={saving} disabled={saving} />
             )}
           </View>
         )}
@@ -347,24 +325,11 @@ export default function ImportPlaces({ visible, near, onClose, onSaved }: Props)
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: colors.bg, paddingTop: 16 },
-  head: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16 },
-  title: { fontSize: 22, fontWeight: '800', color: colors.text },
-  done: { fontSize: 17, fontWeight: '700', color: colors.accent },
-  // one segmented bar, like Add a place: the selected part dark, the rest white
-  tabs: {
-    flexDirection: 'row', marginHorizontal: 16, marginVertical: 12, backgroundColor: colors.card,
-    borderRadius: 10, borderWidth: 1, borderColor: colors.line, overflow: 'hidden',
-  },
-  tab: { flex: 1, paddingVertical: 10, paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
-  tabDivider: { borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.line },
-  tabOn: { backgroundColor: colors.text },
-  tabPressed: { backgroundColor: colors.line },
-  tabText: { fontSize: 14, fontWeight: '600', color: colors.text },
-  tabTextOn: { color: '#fff' },
+  wrap: { flex: 1, backgroundColor: colors.bg },
+  tabs: { marginHorizontal: 16, marginVertical: 12 },
   linkInput: {
-    borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 11, fontSize: 16,
-    color: colors.text, backgroundColor: '#fff',
+    borderWidth: 1, borderColor: colors.line, borderRadius: radius.m, paddingHorizontal: 12, paddingVertical: 11, fontSize: 16,
+    color: colors.text, backgroundColor: colors.card,
   },
   body: { paddingHorizontal: 16, gap: 10, paddingBottom: 24 },
   p: { fontSize: 15, lineHeight: 21, color: colors.text },
@@ -373,23 +338,15 @@ const styles = StyleSheet.create({
   muted: { fontSize: 14, color: colors.muted, fontWeight: '400' },
   error: { color: colors.danger, fontSize: 15, paddingHorizontal: 16 },
   input: {
-    minHeight: 140, maxHeight: 260, borderWidth: 1, borderColor: colors.line, borderRadius: 12, padding: 12, fontSize: 16,
-    color: colors.text, backgroundColor: '#fff', textAlignVertical: 'top',
+    minHeight: 140, maxHeight: 260, borderWidth: 1, borderColor: colors.line, borderRadius: radius.m, padding: 12, fontSize: 16,
+    color: colors.text, backgroundColor: colors.card, textAlignVertical: 'top',
   },
-  primary: { backgroundColor: colors.accent, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
-  primaryText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  off: { opacity: 0.5 },
-  job: { gap: 4, padding: 12, borderRadius: 10, backgroundColor: '#fff', borderWidth: 1, borderColor: colors.line },
+  job: { gap: 4, padding: 12, borderRadius: radius.m, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line },
   jobHead: { fontSize: 15, fontWeight: '700', color: colors.text },
-  seg: { flexDirection: 'row', gap: 8 },
-  segBtn: { flex: 1, borderWidth: 1, borderColor: colors.line, borderRadius: 10, paddingVertical: 8, alignItems: 'center', backgroundColor: '#fff' },
-  segOn: { borderColor: colors.accent, borderWidth: 2 },
-  segText: { fontSize: 14, fontWeight: '600', color: colors.text },
-  segTextOn: { color: colors.accent },
   place: { gap: 6, paddingVertical: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
   placeName: { fontSize: 16, fontWeight: '700', color: colors.text },
-  cand: { borderWidth: 1, borderColor: colors.line, borderRadius: 10, padding: 10, backgroundColor: '#fff' },
-  candOn: { borderColor: colors.accent, borderWidth: 2 },
+  cand: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.m, padding: 10, backgroundColor: colors.card },
+  candOn: { borderColor: colors.saved, borderWidth: 2 },
   candName: { fontSize: 15, fontWeight: '600', color: colors.text },
   skip: { fontSize: 14, color: colors.muted, paddingVertical: 2 },
   footer: { paddingHorizontal: 16, paddingTop: 8, gap: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },

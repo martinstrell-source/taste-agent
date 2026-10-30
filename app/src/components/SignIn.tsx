@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import {
-  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -11,7 +10,8 @@ import {
 } from 'react-native';
 
 import { supabase } from '@/lib/supabase';
-import { colors } from '@/lib/theme';
+import { colors, radius } from '@/lib/theme';
+import { Button } from '@/components/ui';
 
 // Email sign-in with a one-time code (no link to tap, so it works in Expo Go). A new email gets a new
 // account (onboarding follows). A password sign-in is tucked behind a link, for Apple's review account.
@@ -146,42 +146,23 @@ export default function SignIn() {
   );
 }
 
-function Button(props: { title: string; onPress: () => void; disabled?: boolean; busy?: boolean }) {
-  return (
-    <Pressable
-      onPress={props.onPress}
-      disabled={props.disabled}
-      style={({ pressed }) => [styles.button, (props.disabled || pressed) && { opacity: 0.6 }]}>
-      {props.busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.buttonText}>{props.title}</Text>}
-    </Pressable>
-  );
-}
-
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg, justifyContent: 'center' },
   box: { paddingHorizontal: 24, gap: 12 },
-  title: { fontSize: 32, fontWeight: '700', color: colors.text, marginBottom: 16 },
+  title: { fontSize: 36, fontWeight: '800', color: colors.text, letterSpacing: -0.8, marginBottom: 16 },
   label: { fontSize: 15, color: colors.muted },
   input: {
     backgroundColor: colors.card,
     borderColor: colors.line,
     borderWidth: 1,
-    borderRadius: 10,
+    borderRadius: radius.m,
     paddingHorizontal: 14,
     paddingVertical: 12,
     fontSize: 17,
     color: colors.text,
   },
   code: { fontSize: 24, letterSpacing: 6 },
-  button: {
-    backgroundColor: colors.accent,
-    borderRadius: 10,
-    paddingVertical: 14,
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  buttonText: { color: '#fff', fontSize: 17, fontWeight: '600' },
-  link: { color: colors.accent, fontSize: 15, textAlign: 'center', marginTop: 8 },
+  link: { color: colors.text, fontWeight: '600', fontSize: 15, textAlign: 'center', marginTop: 8 },
   small: { color: colors.muted, fontSize: 14, textAlign: 'center', marginTop: 12 },
   error: { color: colors.danger, fontSize: 15, marginTop: 4 },
 });

@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { listHidden, restorePlace, type HiddenPlace } from '@/lib/hide';
 import { colors } from '@/lib/theme';
+import { Button } from '@/components/ui';
 
 const REASON = { closed: 'Permanently closed', didnt_like: "Didn't like it" } as const;
 
@@ -50,9 +51,7 @@ export default function HiddenList({ visible, onClose, onChanged }: { visible: b
                   <Text style={styles.name}>{item.name}</Text>
                   <Text style={styles.muted}>{REASON[item.reason] ?? item.reason}</Text>
                 </View>
-                <Pressable onPress={() => restore(item.id, item.googleId)} hitSlop={8}>
-                  <Text style={styles.link}>Restore</Text>
-                </Pressable>
+                <Button title="Restore" icon="arrow.uturn.backward" kind="secondary" small onPress={() => restore(item.id, item.googleId)} />
               </View>
             )}
           />
@@ -64,10 +63,10 @@ export default function HiddenList({ visible, onClose, onChanged }: { visible: b
 
 const styles = StyleSheet.create({
   backdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.25)' },
-  sheet: { backgroundColor: colors.card, borderTopLeftRadius: 16, borderTopRightRadius: 16, padding: 20, maxHeight: '70%', gap: 10 },
+  sheet: { backgroundColor: colors.card, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: '70%', gap: 10 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  title: { fontSize: 20, fontWeight: '700', color: colors.text },
-  link: { color: colors.accent, fontSize: 16, fontWeight: '600' },
+  title: { fontSize: 22, fontWeight: '800', color: colors.text },
+  link: { color: colors.text, fontSize: 17, fontWeight: '600' },
   muted: { color: colors.muted, fontSize: 14 },
   row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
   name: { fontSize: 16, fontWeight: '600', color: colors.text },

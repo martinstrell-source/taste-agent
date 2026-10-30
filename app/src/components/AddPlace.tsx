@@ -1,7 +1,6 @@
 import * as Location from 'expo-location';
 import { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
   Image,
   KeyboardAvoidingView,
   Modal,
@@ -24,7 +23,8 @@ import {
   type Candidate,
   type Found,
 } from '@/lib/capture';
-import { colors } from '@/lib/theme';
+import { colors, radius } from '@/lib/theme';
+import { Button, Icon, Segmented, SheetHeader } from '@/components/ui';
 
 const TABS: { key: CaptureType; label: string; hint: string }[] = [
   { key: 'link', label: 'Link', hint: 'An article, a Google Maps link, a post' },
@@ -185,28 +185,18 @@ export default function AddPlace({ visible, shared, near, onClose, onSaved }: Pr
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={close}>
       <KeyboardAvoidingView style={styles.wrap} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <View style={styles.header}>
-          <Text style={styles.title}>Add a place</Text>
-          <Pressable onPress={close} hitSlop={10}>
-            <Text style={styles.link}>Done</Text>
-          </Pressable>
-        </View>
+        <SheetHeader title="Add a place" action="Done" onAction={close} />
 
         <ScrollView contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + 24 }]} keyboardShouldPersistTaps="handled">
-          <View style={styles.tabs}>
-            {TABS.map((t) => (
-              <Pressable
-                key={t.key}
-                onPress={() => {
-                  setTab(t.key);
-                  setResult(null);
-                  setError(null);
-                }}
-                style={[styles.tab, tab === t.key && styles.tabOn]}>
-                <Text style={[styles.tabText, tab === t.key && styles.tabTextOn]}>{t.label}</Text>
-              </Pressable>
-            ))}
-          </View>
+          <Segmented
+            options={TABS.map((t) => ({ value: t.key, label: t.label }))}
+            value={tab}
+            onChange={(k) => {
+              setTab(k);
+              setResult(null);
+              setError(null);
+            }}
+          />
           <Text style={styles.hint}>{TABS.find((t) => t.key === tab)?.hint}</Text>
 
           {tab === 'link' && (
@@ -244,12 +234,8 @@ export default function AddPlace({ visible, shared, near, onClose, onSaved }: Pr
           {tab === 'photo' && (
             <View style={{ gap: 10 }}>
               <View style={styles.row}>
-                <Pressable style={styles.secondary} onPress={() => choosePhoto(true)}>
-                  <Text style={styles.secondaryText}>Take a photo</Text>
-                </Pressable>
-                <Pressable style={styles.secondary} onPress={() => choosePhoto(false)}>
-                  <Text style={styles.secondaryText}>Choose a photo</Text>
-                </Pressable>
+                <Button title="Take a photo" icon="camera" kind="secondary" style={{ flex: 1 }} onPress={() => choosePhoto(true)} />
+                <Button title="Choose a photo" icon="photo" kind="secondary" style={{ flex: 1 }} onPress={() => choosePhoto(false)} />
               </View>
               {photo && <Image source={{ uri: photo.uri }} style={styles.preview} resizeMode="cover" />}
               {photo && (
@@ -264,9 +250,7 @@ export default function AddPlace({ visible, shared, near, onClose, onSaved }: Pr
             </View>
           )}
 
-          <Pressable style={[styles.primary, (!ready || busy) && { opacity: 0.5 }]} onPress={() => find()} disabled={!ready || busy}>
-            {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Find the place</Text>}
-          </Pressable>
+          <Button title="Find the place" icon="magnifyingglass" onPress={() => find()} disabled={!ready} busy={busy} />
           {busy && <Text style={styles.hint}>Reading it… this can take 10 to 20 seconds.</Text>}
           {error && <Text style={styles.error}>{error}</Text>}
           {result?.message && <Text style={styles.hint}>{result.message}</Text>}
@@ -290,27 +274,20 @@ export default function AddPlace({ visible, shared, near, onClose, onSaved }: Pr
                     <Option key={c.google_place_id} c={c} on={chosen[i] === c.google_place_id} onPress={() => setChosen((x) => ({ ...x, [i]: c.google_place_id }))} />
                   ))}
                   <Pressable onPress={() => setChosen((x) => ({ ...x, [i]: null }))} style={styles.option}>
-                    <Text style={[styles.radio, chosen[i] === null && styles.radioOn]}>{chosen[i] === null ? '●' : '○'}</Text>
+                    <Icon name={chosen[i] === null ? 'largecircle.fill.circle' : 'circle'} color={chosen[i] === null ? colors.saved : colors.muted} size={20} />
                     <Text style={styles.muted}>{f.candidates.length ? 'None of these' : 'No match found on Google'}</Text>
                   </Pressable>
                   {status[i] ? (
                     <Text style={styles.done}>{status[i]}</Text>
                   ) : (
-                    <Pressable
-                      style={[styles.primary, styles.saveBtn, !chosen[i] && { opacity: 0.5 }]}
-                      onPress={() => save(i, f)}
-                      disabled={!chosen[i]}>
-                      <Text style={styles.primaryText}>Save to Want to go</Text>
-                    </Pressable>
+                    <Button title="Save to Want to go" icon="bookmark.fill" kind="tinted" color={colors.saved} style={{ marginTop: 4 }} onPress={() => save(i, f)} disabled={!chosen[i]} />
                   )}
                 </View>
               ))}
               {(() => {
                 const left = result.places.filter((_, i) => chosen[i] && !status[i]).length;
                 return result.places.length > 1 && left > 0 ? (
-                  <Pressable style={[styles.primary, styles.saveBtn]} onPress={saveAll}>
-                    <Text style={styles.primaryText}>Save all {left} chosen to Want to go</Text>
-                  </Pressable>
+                  <Button title={`Save all ${left} chosen to Want to go`} icon="bookmark.fill" kind="tinted" color={colors.saved} onPress={saveAll} />
                 ) : null;
               })()}
             </View>
@@ -324,7 +301,7 @@ export default function AddPlace({ visible, shared, near, onClose, onSaved }: Pr
 function Option({ c, on, onPress }: { c: Candidate; on: boolean; onPress: () => void }) {
   return (
     <Pressable onPress={onPress} style={styles.option}>
-      <Text style={[styles.radio, on && styles.radioOn]}>{on ? '●' : '○'}</Text>
+      <Icon name={on ? 'largecircle.fill.circle' : 'circle'} color={on ? colors.saved : colors.muted} size={20} />
       <View style={{ flex: 1 }}>
         <Text style={styles.optName}>
           {c.name}
@@ -338,35 +315,20 @@ function Option({ c, on, onPress }: { c: Candidate; on: boolean; onPress: () => 
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, paddingBottom: 8 },
-  title: { fontSize: 24, fontWeight: '700', color: colors.text },
-  link: { color: colors.accent, fontSize: 17, fontWeight: '600' },
   body: { paddingHorizontal: 16, gap: 12 },
-  tabs: { flexDirection: 'row', backgroundColor: colors.card, borderRadius: 10, borderWidth: 1, borderColor: colors.line, overflow: 'hidden' },
-  tab: { flex: 1, paddingVertical: 9, alignItems: 'center' },
-  tabOn: { backgroundColor: colors.text },
-  tabText: { fontSize: 15, color: colors.text },
-  tabTextOn: { color: '#fff', fontWeight: '600' },
   hint: { fontSize: 14, color: colors.muted },
-  input: { backgroundColor: colors.card, borderColor: colors.line, borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 16, color: colors.text },
+  input: { backgroundColor: colors.card, borderColor: colors.line, borderWidth: 1, borderRadius: radius.m, paddingHorizontal: 12, paddingVertical: 11, fontSize: 16, color: colors.text },
   multi: { minHeight: 110, textAlignVertical: 'top' },
   row: { flexDirection: 'row', gap: 10 },
-  secondary: { flex: 1, backgroundColor: '#EFE8DD', borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
-  secondaryText: { fontSize: 15, fontWeight: '600', color: colors.text },
   preview: { width: '100%', height: 200, borderRadius: 10, backgroundColor: colors.line },
-  primary: { backgroundColor: colors.accent, borderRadius: 10, paddingVertical: 14, alignItems: 'center' },
-  primaryText: { color: '#fff', fontSize: 17, fontWeight: '600' },
-  saveBtn: { backgroundColor: colors.saved, marginTop: 4 },
   error: { color: colors.danger, fontSize: 15 },
   source: { fontSize: 14, color: colors.muted, fontStyle: 'italic' },
-  found: { backgroundColor: colors.card, borderRadius: 12, padding: 14, gap: 6, borderWidth: 1, borderColor: colors.line },
+  found: { backgroundColor: colors.card, borderRadius: radius.m, padding: 14, gap: 6, borderWidth: 1, borderColor: colors.line },
   foundName: { fontSize: 19, fontWeight: '700', color: colors.text },
   text: { fontSize: 15, color: colors.text, lineHeight: 21 },
   muted: { fontSize: 14, color: colors.muted },
   label: { fontSize: 13, fontWeight: '600', color: colors.muted, marginTop: 6 },
-  option: { flexDirection: 'row', gap: 10, alignItems: 'flex-start', paddingVertical: 6 },
-  radio: { fontSize: 18, color: colors.muted, width: 20 },
-  radioOn: { color: colors.saved },
+  option: { flexDirection: 'row', gap: 10, alignItems: 'flex-start', paddingVertical: 7 },
   optName: { fontSize: 16, fontWeight: '600', color: colors.text },
   done: { fontSize: 15, fontWeight: '600', color: colors.saved, marginTop: 4 },
 });
