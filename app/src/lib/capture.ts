@@ -121,6 +121,16 @@ function gps(exif: Record<string, unknown> | null | undefined): { lat: number; l
   };
 }
 
+// A photo shared to the app (Share > Taste Agent): same resizing as a chosen photo, no location
+export async function photoFromUri(uri: string, width?: number, height?: number): Promise<{ base64: string; uri: string; where: null }> {
+  const ctx = ImageManipulator.ImageManipulator.manipulate(uri);
+  if ((width ?? 0) >= (height ?? 1)) ctx.resize({ width: Math.min(width || 1568, 1568) });
+  else ctx.resize({ height: Math.min(height || 1568, 1568) });
+  const img = await ctx.renderAsync();
+  const out = await img.saveAsync({ compress: 0.7, format: ImageManipulator.SaveFormat.JPEG, base64: true });
+  return { base64: out.base64 ?? '', uri: out.uri, where: null };
+}
+
 // Take or choose a photo; returns a resized JPEG (base64), a preview uri and where it was taken (if known)
 export async function getPhoto(fromCamera: boolean): Promise<{ base64: string; uri: string; where: { lat: number; lng: number } | null } | null> {
   if (fromCamera) {

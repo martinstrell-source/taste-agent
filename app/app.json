@@ -44,6 +44,18 @@
           "photosPermission": "Taste Agent reads photos you choose to find the places in them.",
           "cameraPermission": "Taste Agent uses the camera to read the sign of a place you want to save."
         }
+      ],
+      [
+        "expo-share-intent",
+        {
+          "iosActivationRules": {
+            "NSExtensionActivationSupportsText": true,
+            "NSExtensionActivationSupportsWebURLWithMaxCount": 1,
+            "NSExtensionActivationSupportsWebPageWithMaxCount": 1,
+            "NSExtensionActivationSupportsImageWithMaxCount": 1
+          },
+          "disableAndroid": true
+        }
       ]
     ],
     "scheme": "tasteagent",

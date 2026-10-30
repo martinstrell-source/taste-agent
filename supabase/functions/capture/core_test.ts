@@ -86,3 +86,22 @@ Deno.test('bill: items and totals, never payment details', async () => {
   eq(r.bill.items[0].name, 'Laghman');
   eq((calls.claude[0][0] as { type: string }).type, 'image');
 });
+
+Deno.test('TikTok: caption and creator from the embed info; Instagram asks for a screenshot', async () => {
+  const { capture, parseTikTok } = await import('./core.ts');
+  const calls: string[] = [];
+  const deps = {
+    fetchPage: async (u: string) => {
+      calls.push(u);
+      return { finalUrl: u, status: 200, html: JSON.stringify({ title: 'Best hand-pulled noodles in Oakland at Noodle House #oakland', author_name: 'eatsbyjo' }) };
+    },
+    claude: async () => '{"source":{"type":"creator","name":"eatsbyjo"},"places":[{"name":"Noodle House","location_hint":"Oakland","note":"hand-pulled noodles","dishes":["hand-pulled noodles"]}]}',
+    googleSearch: async () => [{ id: 'N1', displayName: { text: 'Noodle House' }, types: ['chinese_restaurant'], businessStatus: 'OPERATIONAL' }],
+  };
+  const r = await capture({ type: 'link', url: 'https://www.tiktok.com/@eatsbyjo/video/123' }, deps as never);
+  ok(calls[0].startsWith('https://www.tiktok.com/oembed?url='));
+  eq([r.source.name, r.places[0].name, r.places[0].candidates[0].google_place_id], ['eatsbyjo on TikTok', 'Noodle House', 'N1']);
+  const ig = await capture({ type: 'link', url: 'https://www.instagram.com/p/abc/' }, deps as never);
+  ok(ig.message?.includes('screenshot') && ig.places.length === 0);
+  eq(parseTikTok('nope'), null);
+});

@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
+import { useShareIntentContext } from 'expo-share-intent';
 import * as Location from 'expo-location';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -17,7 +18,7 @@ import {
 import MapView, { Marker, PROVIDER_GOOGLE, type Region } from 'react-native-maps';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import AddPlace from '@/components/AddPlace';
+import AddPlace, { type Shared } from '@/components/AddPlace';
 import HiddenList from '@/components/HiddenList';
 import ImportPlaces from '@/components/ImportPlaces';
 import Onboarding from '@/components/Onboarding';
@@ -40,6 +41,7 @@ import {
 } from '@/lib/format';
 import { hidePlace, moveToList, undoHide, type HideReason } from '@/lib/hide';
 import { areaName, isTimeout, runDiscover, waitForWebRun } from '@/lib/discover';
+import { photoFromUri } from '@/lib/capture';
 import { me } from '@/lib/onboard';
 import { fetchStarred, isStarred, NO_STARS, setStar, type Starred } from '@/lib/star';
 import { notInterested, saveFromPick, undoPick } from '@/lib/picks';
@@ -135,6 +137,35 @@ export default function Nearby() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [runDiscoverSoon, setRunDiscoverSoon] = useState(false);
+
+  // Share > Taste Agent from another app: open Add a place with what was shared
+  const { hasShareIntent, shareIntent, resetShareIntent } = useShareIntentContext();
+  const [shared, setShared] = useState<Shared | null>(null);
+  useEffect(() => {
+    if (!hasShareIntent) return;
+    const img = shareIntent.files?.find((f) => f.mimeType?.startsWith('image/'));
+    (async () => {
+      try {
+        if (img) {
+          const p = await photoFromUri(img.path, img.width ?? undefined, img.height ?? undefined);
+          setShared({ type: 'photo', photo: { base64: p.base64, uri: p.uri } });
+        } else if (shareIntent.webUrl) {
+          setShared({ type: 'link', url: shareIntent.webUrl });
+        } else if (shareIntent.text?.trim()) {
+          setShared({ type: 'text', text: shareIntent.text.trim() });
+        } else {
+          return;
+        }
+        setSelected(null);
+        setShowAdd(true);
+      } catch (e) {
+        setError(`Couldn't open what was shared: ${(e as Error).message}`);
+      } finally {
+        resetShareIntent();
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasShareIntent]);
   const [starred, setStarred] = useState<Starred>(NO_STARS);
 
   // which saves are starred: reloaded with the list
@@ -833,8 +864,12 @@ export default function Nearby() {
       />
       <AddPlace
         visible={showAdd}
+        shared={shared}
         near={mapCenter ?? center}
-        onClose={() => setShowAdd(false)}
+        onClose={() => {
+          setShowAdd(false);
+          setShared(null);
+        }}
         onSaved={() => setReload((n) => n + 1)}
       />
       <ImportPlaces

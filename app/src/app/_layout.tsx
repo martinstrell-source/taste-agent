@@ -1,6 +1,8 @@
 import type { Session } from '@supabase/supabase-js';
 import { Stack } from 'expo-router';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { StatusBar } from 'expo-status-bar';
+import { ShareIntentProvider } from 'expo-share-intent';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -8,6 +10,9 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import SignIn from '@/components/SignIn';
 import { configError, supabase } from '@/lib/supabase';
 import { colors } from '@/lib/theme';
+
+// sharing to the app needs the real build; Expo Go doesn't have the share extension
+const SHARE_OFF = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
 
 export default function RootLayout() {
   const [session, setSession] = useState<Session | null>(null);
@@ -43,10 +48,12 @@ export default function RootLayout() {
   }
 
   return (
-    <SafeAreaProvider>
-      <StatusBar style="dark" />
-      {body}
-    </SafeAreaProvider>
+    <ShareIntentProvider options={{ disabled: SHARE_OFF, resetOnBackground: false }}>
+      <SafeAreaProvider>
+        <StatusBar style="dark" />
+        {body}
+      </SafeAreaProvider>
+    </ShareIntentProvider>
   );
 }
 

@@ -1,5 +1,5 @@
 import * as Location from 'expo-location';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -33,14 +33,18 @@ const TABS: { key: CaptureType; label: string; hint: string }[] = [
   { key: 'friend', label: 'Friend', hint: 'Someone told you about a place' },
 ];
 
+// something shared to the app: opens Add a place with it filled in and already being read
+export type Shared = { type: 'link' | 'text' | 'photo'; url?: string; text?: string; photo?: { base64: string; uri: string } };
+
 type Props = {
   visible: boolean;
+  shared?: Shared | null;
   near: { lat: number; lng: number } | null; // where the map is: helps match names to the right place
   onClose: () => void;
   onSaved: () => void;
 };
 
-export default function AddPlace({ visible, near, onClose, onSaved }: Props) {
+export default function AddPlace({ visible, shared, near, onClose, onSaved }: Props) {
   const insets = useSafeAreaInsets();
   const [tab, setTab] = useState<CaptureType>('link');
   const [url, setUrl] = useState('');
@@ -84,24 +88,26 @@ export default function AddPlace({ visible, near, onClose, onSaved }: Props) {
     (tab === 'friend' && friend.trim() && text.trim().length > 2) ||
     (tab === 'photo' && !!photo);
 
-  async function find() {
+  // what's in the form now (or what was just shared, before the form state catches up)
+  type Form = { tab: CaptureType; url: string; text: string; friend: string; photo: typeof photo };
+  async function find(f: Form = { tab, url, text, friend, photo }) {
     setBusy(true);
     setError(null);
     setResult(null);
     setStatus({});
     try {
       // a photo is matched near where it was taken; otherwise near where you are, or where the map is
-      let where = tab === 'photo' ? photo?.where ?? null : null;
+      let where = f.tab === 'photo' ? f.photo?.where ?? null : null;
       if (!where) {
         const last = await Location.getLastKnownPositionAsync().catch(() => null);
         where = last ? { lat: last.coords.latitude, lng: last.coords.longitude } : near;
       }
       const r = await runCapture({
-        type: tab,
-        url: tab === 'link' ? url.trim() : undefined,
-        text: tab === 'link' ? undefined : text.trim() || undefined,
-        friend: tab === 'friend' ? friend.trim() : undefined,
-        image_base64: tab === 'photo' ? photo?.base64 : undefined,
+        type: f.tab,
+        url: f.tab === 'link' ? f.url.trim() : undefined,
+        text: f.tab === 'link' ? undefined : f.text.trim() || undefined,
+        friend: f.tab === 'friend' ? f.friend.trim() : undefined,
+        image_base64: f.tab === 'photo' ? f.photo?.base64 : undefined,
         lat: where?.lat,
         lng: where?.lng,
       });
@@ -114,6 +120,33 @@ export default function AddPlace({ visible, near, onClose, onSaved }: Props) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  // opened by a share: fill in what was shared and read it right away
+  useEffect(() => {
+    if (!visible || !shared) return;
+    const f: Form = {
+      tab: shared.type,
+      url: shared.url ?? '',
+      text: shared.text ?? '',
+      friend: '',
+      photo: shared.photo ? { ...shared.photo, where: null } : null,
+    };
+    setTab(f.tab);
+    setUrl(f.url);
+    setText(f.text);
+    setFriend('');
+    setPhoto(f.photo);
+    find(f);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, shared]);
+
+  // an article or a notes list can name many places: save every chosen match at once (each was reviewed)
+  async function saveAll() {
+    if (!result) return;
+    for (let i = 0; i < result.places.length; i++) {
+      if (chosen[i] && !status[i]) await save(i, result.places[i]);
     }
   }
 
@@ -231,7 +264,7 @@ export default function AddPlace({ visible, near, onClose, onSaved }: Props) {
             </View>
           )}
 
-          <Pressable style={[styles.primary, (!ready || busy) && { opacity: 0.5 }]} onPress={find} disabled={!ready || busy}>
+          <Pressable style={[styles.primary, (!ready || busy) && { opacity: 0.5 }]} onPress={() => find()} disabled={!ready || busy}>
             {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Find the place</Text>}
           </Pressable>
           {busy && <Text style={styles.hint}>Reading it… this can take 10 to 20 seconds.</Text>}
@@ -241,6 +274,12 @@ export default function AddPlace({ visible, near, onClose, onSaved }: Props) {
           {result && result.places.length > 0 && (
             <View style={{ gap: 14, marginTop: 6 }}>
               {!!sourceText && <Text style={styles.source}>Source: {sourceText}</Text>}
+              {result.places.length > 1 && (
+                <Text style={styles.hint}>
+                  {result.places.length} places found. Check the match for each (or pick "None of these"), then save them one at a time or all
+                  at once at the bottom.
+                </Text>
+              )}
               {result.places.map((f, i) => (
                 <View key={i} style={styles.found}>
                   <Text style={styles.foundName}>{f.name}</Text>
@@ -266,6 +305,14 @@ export default function AddPlace({ visible, near, onClose, onSaved }: Props) {
                   )}
                 </View>
               ))}
+              {(() => {
+                const left = result.places.filter((_, i) => chosen[i] && !status[i]).length;
+                return result.places.length > 1 && left > 0 ? (
+                  <Pressable style={[styles.primary, styles.saveBtn]} onPress={saveAll}>
+                    <Text style={styles.primaryText}>Save all {left} chosen to Want to go</Text>
+                  </Pressable>
+                ) : null;
+              })()}
             </View>
           )}
         </ScrollView>

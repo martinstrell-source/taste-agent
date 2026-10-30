@@ -79,10 +79,36 @@ export type Deps = {
   shorthand?: { term: string; name: string; type: string }[]; // the user's own names ("A" = Alex)
 };
 
-const MAX_PLACES = 10;
+const MAX_PLACES = 30; // a "best of" article or a notes list can name many; the user reviews each
 const FOOD = /restaurant|food|cafe|coffee|bakery|bar|pub|brewery|winery|meal_|ice_cream|dessert|tea|juice|deli|market|confectionery|donut|bagel/;
 
 // ---------- reading a link ----------
+
+export function isTikTok(u: string): boolean {
+  try {
+    return /(^|\.)tiktok\.com$/i.test(new URL(u).hostname);
+  } catch {
+    return false;
+  }
+}
+export function isInstagram(u: string): boolean {
+  try {
+    return /(^|\.)instagram\.com$/i.test(new URL(u).hostname);
+  } catch {
+    return false;
+  }
+}
+// TikTok's embed info (oEmbed): the video's caption ("title") and creator
+export function parseTikTok(json: string): { caption: string; author: string } | null {
+  try {
+    const d = JSON.parse(json);
+    const caption = typeof d.title === 'string' ? d.title.trim() : '';
+    if (!caption) return null;
+    return { caption: caption.slice(0, 3000), author: typeof d.author_name === 'string' ? d.author_name : '' };
+  } catch {
+    return null;
+  }
+}
 
 export function isMapsUrl(u: string): boolean {
   return /^https?:\/\/(www\.)?(google\.[a-z.]+\/maps|maps\.google\.|maps\.app\.goo\.gl|goo\.gl\/maps)/i.test(u);
@@ -138,7 +164,7 @@ Answer with JSON only, no other text:
  "places": [{"name": "...", "location_hint": "neighborhood, street or city if given, else empty",
              "note": "one short sentence in your own words: what it is and what was said about it",
              "dishes": ["dishes or drinks named for this place"]}]}
-At most 10 places. If there are none, return an empty list.`;
+List every place, up to 30. If there are none, return an empty list.`;
 
 export function parseClaude(text: string): { source: { type: string; name: string | null }; places: Omit<Found, 'candidates'>[] } {
   const raw = text.match(/```(?:json)?\s*([\s\S]*?)```/)?.[1] ?? text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
@@ -207,6 +233,29 @@ export async function capture(input: Input, deps: Deps): Promise<Result> {
   if (input.type === 'link') {
     const url = (input.url ?? '').trim();
     if (!/^https?:\/\//i.test(url)) return { source: { type: 'other', name: null, url: null }, places: [], message: 'That doesn\'t look like a link.' };
+    // TikTok and Instagram pages don't let apps read them. TikTok publishes each video's caption and creator
+    // for embedding, which usually names the place; Instagram needs a business-verified Facebook app for that.
+    if (isTikTok(url)) {
+      // short share links (vm.tiktok.com/...) redirect to the video page; the embed info needs that full link
+      const full = /^(vm|vt)\./i.test(new URL(url).hostname) ? ((await deps.fetchPage(url).catch(() => null))?.finalUrl ?? url) : url;
+      const embed = await deps.fetchPage(`https://www.tiktok.com/oembed?url=${encodeURIComponent(full)}`).catch(() => null);
+      const info = parseTikTok(embed?.html ?? '');
+      if (!info) return { source: { type: 'creator', name: null, url }, places: [], message: "Couldn't read that TikTok. Share a screenshot of the video instead (Photo)." };
+      const answer = await deps.claude([
+        { type: 'text', text: `A TikTok video the user wants to save places from.${known}\nCreator: ${info.author}\nCaption: ${info.caption}` },
+      ]);
+      const parsed = parseClaude(answer);
+      const places = await Promise.all(parsed.places.map(async (p) => ({ ...p, candidates: await matchOnGoogle(p.name, p.location_hint, bias, deps) })));
+      return {
+        source: { type: 'creator', name: info.author ? `${info.author} on TikTok` : 'TikTok', url },
+        places,
+        message: places.length ? undefined : "The caption doesn't name a place. Share a screenshot of the video where the name shows (Photo).",
+      };
+    }
+    if (isInstagram(url)) {
+      return { source: { type: 'creator', name: 'Instagram', url }, places: [], message: "Instagram doesn't let apps read posts. Share a screenshot of the post instead (Photo)." };
+    }
+
     const page = await deps.fetchPage(url).catch(() => null);
     const finalUrl = page?.finalUrl ?? url;
 
