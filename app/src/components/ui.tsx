@@ -60,7 +60,7 @@ export function Button({
       ) : (
         <View style={styles.btnInner}>
           {icon && <Icon name={icon} color={fg} size={small ? 14 : 16} />}
-          <Text style={[styles.btnText, small && styles.btnTextSmall, { color: fg }]} numberOfLines={1} maxFontSizeMultiplier={1.1} adjustsFontSizeToFit minimumFontScale={0.7}>
+          <Text style={[styles.btnText, small && styles.btnTextSmall, { color: fg }]} numberOfLines={2} maxFontSizeMultiplier={1.1}>
             {title}
           </Text>
         </View>
@@ -173,7 +173,7 @@ const styles = StyleSheet.create({
   btn: { borderRadius: radius.m, paddingVertical: 14, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center' },
   btnSmall: { paddingVertical: 9, paddingHorizontal: 8, borderRadius: radius.s },
   btnInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, maxWidth: '100%' },
-  btnText: { flexShrink: 1, fontSize: 16, fontWeight: '700' },
+  btnText: { flexShrink: 1, fontSize: 16, fontWeight: '700', textAlign: 'center' },
   btnTextSmall: { fontSize: 14, fontWeight: '600' },
   outline: { borderWidth: 1.5, borderColor: colors.text },
   iconBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },

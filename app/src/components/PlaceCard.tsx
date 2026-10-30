@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Image, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, KeyboardAvoidingView, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
@@ -21,13 +21,14 @@ import { fetchPlaceDetails, type NearbyPlace, type PlaceDetails } from '@/lib/su
 import { listVisits, REACTION_LABEL, type Visit } from '@/lib/visits';
 import { colors, groupColor, radius } from '@/lib/theme';
 import { Button, Icon } from '@/components/ui';
+import WhyNot from '@/components/WhyNot';
 
 type Props = {
   place: NearbyPlace | null;
   onClose: () => void;
   onHide: (p: NearbyPlace, reason: HideReason) => void;
   onMove: (p: NearbyPlace, list: 'favorites' | 'want_to_go') => void;
-  onPick: (p: NearbyPlace, action: 'want' | 'not_interested') => void;
+  onPick: (p: NearbyPlace, action: 'want' | 'not_interested', note?: string | null) => void;
   onLogVisit: (p: NearbyPlace) => void;
   visitsKey: number; // changes after a visit is saved, to reload the list
   onDetails: (googleId: string, d: PlaceDetails) => void; // so the list and filters see it too
@@ -43,9 +44,12 @@ function shortDate(iso: string): string {
 // Bottom card with the basics for one place
 export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLogVisit, visitsKey, onDetails, starred, onStar }: Props) {
   const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
   const [loading, setLoading] = useState(false);
   const [mentions, setMentions] = useState<Mention[]>([]);
   const [visits, setVisits] = useState<Visit[]>([]);
+  const [asking, setAsking] = useState(false); // after Not interested: why?
+  useEffect(() => setAsking(false), [place]);
 
   // your past visits here: date, reaction, what you ordered, photos
   useEffect(() => {
@@ -97,8 +101,13 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
     <Modal visible={!!place} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={styles.backdrop} onPress={onClose} />
       {place && (
-        <View style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <View style={[styles.sheet, { paddingBottom: insets.bottom + 16, maxHeight: height * 0.75 }]}>
           <View style={styles.handle} />
+          {asking ? (
+            <WhyNot name={place.name} onDone={(note) => onPick(place, 'not_interested', note)} />
+          ) : (
+          <>
           <ScrollView contentContainerStyle={{ gap: 8 }}>
             <View style={styles.row}>
               <Text style={[styles.badge, { backgroundColor: groupColor[groupOf(place)] }]}>{placeLabel(place)}</Text>
@@ -189,14 +198,14 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
           </ScrollView>
 
           <View style={styles.hideRow}>
-            <Button title="Google Maps" style={{ flex: 1.6 }} onPress={() => Linking.openURL(mapsUrl(place))} />
-            <Button title="Waze" kind="secondary" style={{ flex: 1 }} onPress={() => Linking.openURL(wazeUrl(place))} />
-            <Button title="Yelp" kind="secondary" style={{ flex: 1 }} onPress={() => Linking.openURL(yelpUrl(place))} />
+            <Button title="Google Maps" style={{ flex: 1 }} onPress={() => Linking.openURL(mapsUrl(place))} />
+            <Button title="Waze" kind="secondary" style={styles.side} onPress={() => Linking.openURL(wazeUrl(place))} />
+            <Button title="Yelp" kind="secondary" style={styles.side} onPress={() => Linking.openURL(yelpUrl(place))} />
           </View>
           {place.kind === 'pick' && (
             <View style={styles.hideRow}>
-              <Button title="Want to go" icon="plus" kind="tinted" color={colors.saved} style={{ flex: 1 }} onPress={() => onPick(place, 'want')} />
-              <Button title="Not interested" kind="secondary" style={{ flex: 1 }} onPress={() => onPick(place, 'not_interested')} />
+              <Button title="Want to go" kind="tinted" color={colors.saved} style={{ flex: 1 }} onPress={() => onPick(place, 'want')} />
+              <Button title="Not interested" kind="secondary" style={{ flex: 1 }} onPress={() => setAsking(true)} />
             </View>
           )}
           <View style={styles.hideRow}>
@@ -217,7 +226,10 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
               <Button title="Didn't like it" kind="secondary" small style={{ flex: 1 }} onPress={() => onHide(place, 'didnt_like')} />
             </View>
           )}
+          </>
+          )}
         </View>
+        </KeyboardAvoidingView>
       )}
     </Modal>
   );
@@ -231,7 +243,6 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 20,
     paddingHorizontal: 20,
     paddingTop: 8,
-    maxHeight: '75%',
     gap: 12,
   },
   handle: { alignSelf: 'center', width: 40, height: 5, borderRadius: 3, backgroundColor: colors.line, marginBottom: 8 },
@@ -250,6 +261,7 @@ const styles = StyleSheet.create({
   noteBox: { backgroundColor: colors.bg, borderRadius: radius.m, padding: 12, gap: 4, marginTop: 4 },
   noteLabel: { fontSize: 13, fontWeight: '600', color: colors.muted },
   hideRow: { flexDirection: 'row', gap: 8 },
+  side: { paddingHorizontal: 14 },
   why: { fontSize: 15, fontWeight: '600', color: colors.pick },
   visit: { gap: 3, paddingVertical: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
   visitHead: { fontSize: 15, fontWeight: '600', color: colors.text },
