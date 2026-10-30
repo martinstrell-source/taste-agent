@@ -20,6 +20,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import AddPlace, { type Shared } from '@/components/AddPlace';
 import { Button, Chip, Icon, IconButton, Segmented } from '@/components/ui';
+import Swipeable, { SwipeDirection, type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
 import HiddenList from '@/components/HiddenList';
 import ImportPlaces from '@/components/ImportPlaces';
 import Onboarding from '@/components/Onboarding';
@@ -131,6 +132,7 @@ export default function Nearby() {
   const [prices, setPrices] = useState<Set<string>>(new Set());
   const [openNow, setOpenNow] = useState(false);
   const [justOpened, setJustOpened] = useState(false);
+  const [askWhy, setAskWhy] = useState(false); // the card opens straight to "Why not?" after a swipe left
   const [checking, setChecking] = useState(false);
 
   // hide with undo
@@ -445,6 +447,13 @@ export default function Nearby() {
     return c;
   }, [merged]);
 
+  // the third chip says what's in it: "Added" (places added in the app), "Been there", or a Google list's
+  // own name; "More lists" only when it mixes several
+  const otherLabel = useMemo(() => {
+    const names = [...new Set(merged.filter((p) => groupOf(p) === 'other').map((p) => placeLabel(p)))];
+    return names.length === 1 ? names[0].charAt(0).toUpperCase() + names[0].slice(1) : 'More lists';
+  }, [merged]);
+
   const { shown, unknown } = useMemo(() => {
     let unknownCount = 0;
     const list = merged.filter((p) => {
@@ -749,7 +758,7 @@ export default function Nearby() {
       <View style={styles.controls}>
         <View style={styles.chipRow}>
           {GROUPS.filter((g) => g !== 'other' || byGroup.other > 0).map((g) => (
-            <Chip key={g} label={`${GROUP_LABEL[g]} ${byGroup[g]}`} color={groupColor[g]} on={!hiddenGroups.has(g)} onPress={() => toggleGroup(g)} />
+            <Chip key={g} label={`${g === 'other' ? otherLabel : GROUP_LABEL[g]} ${byGroup[g]}`} color={groupColor[g]} on={!hiddenGroups.has(g)} onPress={() => toggleGroup(g)} />
           ))}
         </View>
         <View style={styles.toolRow}>
@@ -875,7 +884,21 @@ export default function Nearby() {
               <Button title="Sign out" kind="secondary" small onPress={() => supabase.auth.signOut()} />
             </View>
           }
-          renderItem={({ item }) => <Row place={item} starred={isStarred(item, starred)} onPress={() => setSelected(item)} />}
+          renderItem={({ item }) => {
+            const row = <Row place={item} starred={isStarred(item, starred)} onPress={() => setSelected(item)} />;
+            if (item.kind !== 'pick' || item.from_search) return row;
+            // suggestions: swipe right for Want to go, left for Not for me (then the card asks why)
+            return (
+              <SwipeRow
+                onWant={() => pickAction(item, 'want')}
+                onNo={() => {
+                  setAskWhy(true);
+                  setSelected(item);
+                }}>
+                {row}
+              </SwipeRow>
+            );
+          }}
         />
       )}
 
@@ -892,10 +915,17 @@ export default function Nearby() {
 
       <PlaceCard
         place={selected ? (merged.find((p) => p.kind === selected.kind && p.ref === selected.ref) ?? selected) : null}
-        onClose={() => setSelected(null)}
+        onClose={() => {
+          setSelected(null);
+          setAskWhy(false);
+        }}
+        askWhy={askWhy}
         onHide={hide}
         onMove={move}
-        onPick={pickAction}
+        onPick={(p, a, note) => {
+          setAskWhy(false);
+          pickAction(p, a, note);
+        }}
         onLogVisit={(p) => {
           setSelected(null); // iOS can't stack two sheets: close the card, then open the visit form
           setTimeout(() => setVisitFor(p), 400);
@@ -943,6 +973,41 @@ export default function Nearby() {
       />
       <HiddenList visible={showHidden} onClose={() => setShowHidden(false)} onChanged={() => setReload((n) => n + 1)} />
     </SafeAreaView>
+  );
+}
+
+function SwipeRow({ children, onWant, onNo }: { children: React.ReactNode; onWant: () => void; onNo: () => void }) {
+  const ref = useRef<SwipeableMethods>(null);
+  return (
+    <Swipeable
+      ref={ref}
+      friction={1.5}
+      leftThreshold={90}
+      rightThreshold={90}
+      overshootLeft={false}
+      overshootRight={false}
+      renderLeftActions={() => <SwipeAction label="Want to go" color={colors.saved} icon="bookmark.fill" align="left" />}
+      renderRightActions={() => <SwipeAction label="Not for me" color={colors.muted} icon="hand.thumbsdown.fill" align="right" />}
+      onSwipeableOpen={(dir) => {
+        ref.current?.close();
+        // RIGHT: the row moved right (swiped right), showing the left action
+        if (dir === SwipeDirection.RIGHT) onWant();
+        else onNo();
+      }}>
+      {children}
+    </Swipeable>
+  );
+}
+
+// what shows under a suggestion as it's swiped
+function SwipeAction({ label, color, icon, align }: { label: string; color: string; icon: 'bookmark.fill' | 'hand.thumbsdown.fill'; align: 'left' | 'right' }) {
+  return (
+    <View style={[styles.swipeAction, { backgroundColor: color, alignItems: align === 'left' ? 'flex-start' : 'flex-end' }]}>
+      <View style={styles.swipeInner}>
+        <Icon name={icon} color="#fff" size={18} />
+        <Text style={styles.swipeText}>{label}</Text>
+      </View>
+    </View>
   );
 }
 
@@ -1093,6 +1158,9 @@ const styles = StyleSheet.create({
   },
   filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
   hint: { fontSize: 13, color: colors.muted },
+  swipeAction: { width: 130, justifyContent: 'center', paddingHorizontal: 18 },
+  swipeInner: { alignItems: 'center', gap: 4 },
+  swipeText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   starter: { margin: 16, marginBottom: 8, padding: 14, gap: 8, borderRadius: corner.m, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line },
   starterTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
   starterText: { fontSize: 14, lineHeight: 20, color: colors.muted },

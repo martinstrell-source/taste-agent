@@ -29,6 +29,7 @@ type Props = {
   onHide: (p: NearbyPlace, reason: HideReason) => void;
   onMove: (p: NearbyPlace, list: 'favorites' | 'want_to_go') => void;
   onPick: (p: NearbyPlace, action: 'want' | 'not_interested', note?: string | null) => void;
+  askWhy?: boolean; // open straight to "Why not?" (after a swipe left on the list)
   onLogVisit: (p: NearbyPlace) => void;
   visitsKey: number; // changes after a visit is saved, to reload the list
   onDetails: (googleId: string, d: PlaceDetails) => void; // so the list and filters see it too
@@ -42,14 +43,15 @@ function shortDate(iso: string): string {
 }
 
 // Bottom card with the basics for one place
-export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLogVisit, visitsKey, onDetails, starred, onStar }: Props) {
+export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLogVisit, visitsKey, onDetails, starred, onStar, askWhy }: Props) {
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
   const [loading, setLoading] = useState(false);
   const [mentions, setMentions] = useState<Mention[]>([]);
   const [visits, setVisits] = useState<Visit[]>([]);
   const [asking, setAsking] = useState(false); // after Not interested: why?
-  useEffect(() => setAsking(false), [place]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => setAsking(!!askWhy), [place?.ref]);
 
   // your past visits here: date, reaction, what you ordered, photos
   useEffect(() => {

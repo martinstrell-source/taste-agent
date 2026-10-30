@@ -5,6 +5,7 @@ import { StatusBar } from 'expo-status-bar';
 import { ShareIntentProvider } from 'expo-share-intent';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import SignIn from '@/components/SignIn';
@@ -48,12 +49,14 @@ export default function RootLayout() {
   }
 
   return (
-    <ShareIntentProvider options={{ disabled: SHARE_OFF, resetOnBackground: false }}>
-      <SafeAreaProvider>
-        <StatusBar style="dark" />
-        {body}
-      </SafeAreaProvider>
-    </ShareIntentProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ShareIntentProvider options={{ disabled: SHARE_OFF, resetOnBackground: false }}>
+        <SafeAreaProvider>
+          <StatusBar style="dark" />
+          {body}
+        </SafeAreaProvider>
+      </ShareIntentProvider>
+    </GestureHandlerRootView>
   );
 }
 
