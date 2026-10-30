@@ -8,6 +8,9 @@ const P = (id: string, name: string, types: string[], rating = 4.6, count = 120,
   types, rating, userRatingCount: count, businessStatus: status,
 });
 
+// the city-profile question (the other fast Claude call is the chain and "no" check)
+const isArea = (p: string) => p.includes('travels for food is visiting');
+
 function deps(over: Partial<DiscoverDeps> = {}) {
   const saved: { items: unknown[]; rows: { google_place_id: string; in_bay_area: boolean; item_id: string; what_it_says?: string }[]; scores: { google_place_id: string; score: number; reason: string }[]; mode: string }[] = [];
   const searches: string[] = [];
@@ -86,7 +89,7 @@ Deno.test('away: local specialties first, your cuisines only if local, others on
   const searches: string[] = [];
   const { d, saved } = deps({
     home: async () => ({ lat: 37.77, lng: -122.25 }),
-    claudeText: async (p) => (asked.push(p), 'Sure:\n' + BEIJING),
+    claudeText: async (p) => (isArea(p) ? (asked.push(p), 'Sure:\n' + BEIJING) : '[]'),
     saveAreaProfile: async (k) => void savedProfiles.push(k),
     googleSearch: async (q) => {
       searches.push(q);
@@ -110,9 +113,9 @@ Deno.test('away: local specialties first, your cuisines only if local, others on
 Deno.test('away: a cached city profile is reused; near home nothing is asked', async () => {
   let asked = 0;
   const p = parseAreaProfile(BEIJING)!;
-  const a = deps({ home: async () => ({ lat: 37.77, lng: -122.25 }), getAreaProfile: async () => p, claudeText: async () => (asked++, '') });
+  const a = deps({ home: async () => ({ lat: 37.77, lng: -122.25 }), getAreaProfile: async () => p, claudeText: async (q) => (isArea(q) && asked++, '') });
   await discoverGoogle({ type: 'discover', mode: 'google', lat: 39.9, lng: 116.4 }, a.d);
-  const b = deps({ home: async () => ({ lat: 45.4, lng: -122.6 }), claudeText: async () => (asked++, '') });
+  const b = deps({ home: async () => ({ lat: 45.4, lng: -122.6 }), claudeText: async (q) => (isArea(q) && asked++, '') });
   await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, b.d);
   eq(asked, 0);
   ok(b.searches.includes('best restaurants'));
@@ -247,7 +250,7 @@ Deno.test('away: a saved profile without a size is asked again once', async () =
   const { d } = deps({
     home: async () => ({ lat: 37.77, lng: -122.25 }),
     getAreaProfile: async () => ({ local: [{ name: 'X', query: 'x', tags: ['x'] }], strengths: [] }),
-    claudeText: async () => (asked++, BEIJING),
+    claudeText: async (q) => (isArea(q) ? (asked++, BEIJING) : '[]'),
   });
   await discoverGoogle({ type: 'discover', mode: 'google', lat: 39.9, lng: 116.4 }, d);
   eq(asked, 1);
@@ -272,11 +275,17 @@ Deno.test('noes: places like ones the user turned down are left out, with the re
   eq(ids.length, new Set(ids).size);
 });
 
-Deno.test('noes: none said means no extra Claude call; unreadable answer keeps everything', async () => {
-  let calls = 0;
-  const a = deps({ claudeText: async () => (calls++, '') });
-  await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, a.d);
-  eq(calls, 0);
+Deno.test('screen: with no reasons given, Claude still flags chains (and only chains); unreadable answer keeps everything', async () => {
+  let asked = '';
+  const a = deps({ claudeText: async (p) => ((asked = p), '[{"n": 1, "chain": true, "why": "regional chain"}, {"n": 2, "chain": false, "why": "meh"}]') });
+  const trace: Record<string, unknown> = {};
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, a.d, trace);
+  ok(asked.includes('chains') && !asked.includes('turned suggestions down'));
+  const first = asked.split('\n').find((l) => l.startsWith('1. '))!.slice(3).split(' (')[0];
+  eq(trace.chains_left_out, [first]);
+  const base = deps();
+  await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, base.d);
+  eq(a.saved[0].scores.length, base.saved[0].scores.length - 1);
   const b = deps({ dislikes: async () => ['X: too touristy'], claudeText: async () => 'no idea' });
   const c = deps();
   await discoverGoogle({ type: 'discover', mode: 'google', lat: 45.52, lng: -122.68 }, b.d);
@@ -362,4 +371,9 @@ Deno.test('away: a cuisine saved at home gives at most 2 standouts, and the web 
   await discoverWeb({ type: 'discover', mode: 'web', lat: 40.7, lng: -74.0, area_name: 'New York' }, w.d);
   ok(prompt.includes('That reflects where they live, not what they') && !prompt.includes('Their favorite cuisines'));
   eq([w.saved[0].scores[0].score, w.saved[0].scores[0].reason], [0.75, 'From Eater NY']);
+});
+
+Deno.test('chains: regional chains are on the name list', () => {
+  ok(isChain('Round Table Pizza') && isChain("Peet's Coffee") && isChain('Mountain Mike’s Pizza') && isChain('In-N-Out Burger'));
+  ok(!isChain('Round the Corner Cafe') && !isChain('Tartine'));
 });

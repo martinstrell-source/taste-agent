@@ -752,7 +752,7 @@ export const WEB_PER_DAY = 3;
 export const AWAY_KM = 100;
 const TOO_BROAD = new Set(['american', 'asian', 'european', 'fusion', 'cafe', 'restaurant', 'breakfast', 'brunch']);
 // global chains: never a discovery, home or away
-const CHAINS = /^(pizza hut|kfc|mcdonald'?s|starbucks|domino'?s|subway|burger king|papa john'?s|dunkin'?|taco bell|wendy'?s|tim hortons|costa coffee|dairy queen|hard rock cafe|five guys|shake shack|popeyes|chick-fil-a|little caesars|panda express|chipotle|sizzler|tgi friday'?s|outback steakhouse|haagen-dazs|baskin-robbins|krispy kreme|7-eleven|family ?mart|lawson|luckin coffee|mixue|yoshinoya|sukiya|matsuya|coco ichibanya|saizeriya)\b/i;
+const CHAINS = /^(round table|mountain mike'?s|peet'?s|in-n-out|jack in the box|carl'?s jr|del taco|el pollo loco|panera|olive garden|applebee'?s|chili'?s|denny'?s|ihop|red robin|the cheesecake factory|cheesecake factory|p\.? ?f\.? chang'?s|buffalo wild wings|wingstop|jersey mike'?s|jimmy john'?s|firehouse subs|noodles & company|pieology|mod pizza|blaze pizza|the habit burger|togo'?s|jamba|black bear diner|marie callender'?s|raising cane'?s|whataburger|sonic drive-in|arby'?s|qdoba|texas roadhouse|red lobster|cracker barrel|cold stone|yogurtland|pinkberry|auntie anne'?s|cinnabon|jollibee|dutch bros|the coffee bean|coffee bean & tea leaf|tropical smoothie|smoothie king|sweetgreen|cava|pizza hut|kfc|mcdonald'?s|starbucks|domino'?s|subway|burger king|papa john'?s|dunkin'?|taco bell|wendy'?s|tim hortons|costa coffee|dairy queen|hard rock cafe|five guys|shake shack|popeyes|chick-fil-a|little caesars|panda express|chipotle|sizzler|tgi friday'?s|outback steakhouse|haagen-dazs|baskin-robbins|krispy kreme|7-eleven|family ?mart|lawson|luckin coffee|mixue|yoshinoya|sukiya|matsuya|coco ichibanya|saizeriya)\b/i;
 export function isChain(name: string): boolean {
   return CHAINS.test(name.trim().replace(/[’`]/g, "'"));
 }
@@ -760,43 +760,52 @@ const FOOD_D = /restaurant|food|cafe|coffee|bakery|bar|pub|brewery|winery|meal_|
 
 // ---------- what the user said no to ----------
 
-export function dislikePrompt(dislikes: string[], places: { id: string; name: string; detail: string }[]): string {
-  return `Someone uses an app that suggests restaurants. When they turned suggestions down, they said:
-${dislikes.map((d) => `- ${d}`).join('\n')}
-
-Here are new suggestions for them (name, then what Google or an article says about it):
+// one fast Claude check on new picks: chains (regional ones the name list misses, like Round Table)
+// and, when the user has said why they turned places down, places like those
+export function screenPrompt(dislikes: string[], places: { id: string; name: string; detail: string }[]): string {
+  const noes = dislikes.length
+    ? `\nWhen they turned suggestions down, they said:\n${dislikes.map((d) => `- ${d}`).join('\n')}\n`
+    : '';
+  return `An app suggests restaurants, cafes and bars to someone who likes independent places.${noes}
+New suggestions (name, then what Google or an article says about it):
 ${places.map((p, i) => `${i + 1}. ${p.name}${p.detail ? ` (${p.detail})` : ''}`).join('\n')}
 
-Which of these would they most likely turn down for the same reasons? Only flag a place when the name or details
-make it clear (a reason like "too far" or "too pricey" for one place says little about others). Most should stay.
-Answer with only a JSON array: [{"n": <number>, "why": "a few words"}]. Use [] if none.`;
+Flag:
+- chains: a business with many locations under the same name across a region or the country (Round Table Pizza,
+  Peet's Coffee, Panera). A local business with a few locations in one city is not a chain.${dislikes.length ? `
+- places they would most likely turn down for the reasons they gave. Only when the name or details make it clear
+  (a reason like "too far" or "too pricey" for one place says little about others).` : ''}
+Most should stay. Answer with only a JSON array: [{"n": <number>, "chain": true or false, "why": "a few words"}]. Use [] if none.`;
 }
 
-// one fast Claude call: ids to leave out, with the reason, recorded in the trace
-export async function screenDislikes(
+// ids to leave out, with the reason, recorded in the trace
+export async function screenPlaces(
   places: { id: string; name: string; detail: string }[],
   deps: DiscoverDeps,
   trace: Trace,
 ): Promise<Set<string>> {
   const out = new Set<string>();
+  if (!places.length) return out;
   const dislikes = (await deps.dislikes?.().catch(() => [])) ?? [];
-  if (!dislikes.length || !places.length) return out;
   const list = places.slice(0, 60);
-  const answer = await deps.claudeText(dislikePrompt(dislikes, list)).catch(() => '');
-  const dropped: { name: string; why: string }[] = [];
+  const answer = await deps.claudeText(screenPrompt(dislikes, list)).catch(() => '');
+  const chains: string[] = [];
+  const noes: { name: string; why: string }[] = [];
   try {
     const m = answer.match(/\[[\s\S]*\]/);
     for (const x of JSON.parse(m ? m[0] : '[]')) {
       const p = list[Number(x?.n) - 1];
-      if (p && !out.has(p.id)) {
-        out.add(p.id);
-        dropped.push({ name: p.name, why: String(x?.why ?? '') });
-      }
+      if (!p || out.has(p.id)) continue;
+      if (x?.chain !== true && !dislikes.length) continue; // no reasons given: only chains can be flagged
+      out.add(p.id);
+      if (x?.chain === true) chains.push(p.name);
+      else noes.push({ name: p.name, why: String(x?.why ?? '') });
     }
   } catch {
     // unreadable answer: keep everything
   }
-  trace.your_noes = { said: dislikes, left_out: dropped };
+  trace.chains_left_out = chains;
+  if (dislikes.length) trace.your_noes = { said: dislikes, left_out: noes };
   return out;
 }
 
@@ -1136,7 +1145,7 @@ export async function discoverGoogle(input: DiscoverInput, deps: DiscoverDeps, t
     }
   }
 
-  const no = await screenDislikes([...info.values()].filter((p) => scores.has(p.id)), deps, trace);
+  const no = await screenPlaces([...info.values()].filter((p) => scores.has(p.id)), deps, trace);
   await deps.save(items, rows, [...scores.values()].filter((x) => !no.has(x.google_place_id)), key, 'google');
   trace.kind = 'google';
   trace.result = { searched, reused: queries.length - searched, places: scores.size };
@@ -1218,7 +1227,7 @@ export async function discoverWeb(input: DiscoverInput, deps: DiscoverDeps, trac
     // the web was searched for this area recently (by anyone): reuse, and score for this user
     const prev = await deps.existingForArea(key, `here:${key}:w:`);
     const fresh = prev.filter((p) => !known.has(p.google_place_id) && !isChain(p.name ?? ''));
-    const no = await screenDislikes(fresh.map((p) => ({ id: p.google_place_id, name: p.name ?? '', detail: p.cuisine ?? '' })), deps, trace);
+    const no = await screenPlaces(fresh.map((p) => ({ id: p.google_place_id, name: p.name ?? '', detail: p.cuisine ?? '' })), deps, trace);
     const scores = fresh
       .filter((p) => !no.has(p.google_place_id))
       .map((p) => ({ google_place_id: p.google_place_id, score: 0.55, reason: `From ${p.source}` }));
