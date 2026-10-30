@@ -226,6 +226,8 @@ def suggestions(con, uid, lat, lng, started):
     with con.transaction():
         con.execute("SELECT set_config('request.jwt.claim.sub', %s, true), "
                     "set_config('request.jwt.claims', %s, true)", (uid, json.dumps({"sub": uid, "role": "authenticated"})))
+        # read the list exactly as the app does: as the signed-in user, so a missing permission fails here too
+        con.execute("SET LOCAL ROLE authenticated")
         rows = con.execute("""
             SELECT n.name, n.google_place_id, n.distance_m, n.categories, n.rating, n.review_count, n.score, n.why,
                    n.note, n.just_opened, n.opened_note,
@@ -237,6 +239,7 @@ def suggestions(con, uid, lat, lng, started):
             LEFT JOIN pick_scores ps ON ps.user_id = %s AND ps.google_place_id = n.google_place_id
             WHERE n.kind = 'pick'
             ORDER BY n.score DESC NULLS LAST, n.distance_m""", (started, lat, lng, LIST_M, uid)).fetchall()
+        con.execute("RESET ROLE")
     keys = ("name", "gid", "distance_m", "categories", "rating", "reviews", "score", "why", "note", "just_opened",
             "opened_note", "lat", "lng",
             "primary_type", "status", "source", "this_run")
