@@ -205,7 +205,7 @@ export default function PlaceCard({ place, onClose, onHide, onMove, onPick, onLo
           {place.kind === 'pick' && (
             <View style={styles.hideRow}>
               <Button title="Want to go" kind="tinted" color={colors.saved} style={{ flex: 1 }} onPress={() => onPick(place, 'want')} />
-              <Button title="Not interested" kind="secondary" style={{ flex: 1 }} onPress={() => setAsking(true)} />
+              <Button title="Not for me" kind="secondary" style={{ flex: 1 }} onPress={() => setAsking(true)} />
             </View>
           )}
           <View style={styles.hideRow}>
@@ -261,7 +261,7 @@ const styles = StyleSheet.create({
   noteBox: { backgroundColor: colors.bg, borderRadius: radius.m, padding: 12, gap: 4, marginTop: 4 },
   noteLabel: { fontSize: 13, fontWeight: '600', color: colors.muted },
   hideRow: { flexDirection: 'row', gap: 8 },
-  side: { paddingHorizontal: 14 },
+  side: { paddingHorizontal: 12 },
   why: { fontSize: 15, fontWeight: '600', color: colors.pick },
   visit: { gap: 3, paddingVertical: 6, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line },
   visitHead: { fontSize: 15, fontWeight: '600', color: colors.text },

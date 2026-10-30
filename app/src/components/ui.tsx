@@ -62,7 +62,7 @@ export function Button({
         // off instead of wrapping when the button is narrow (small phones, larger text)
         (() => {
           const label = (
-            <Text style={[styles.btnText, small && styles.btnTextSmall, { color: fg }]} numberOfLines={2} maxFontSizeMultiplier={1}>
+            <Text style={[styles.btnText, small && styles.btnTextSmall, { color: fg }]} numberOfLines={2} allowFontScaling={false}>
               {title}
             </Text>
           );
@@ -181,10 +181,10 @@ export function SheetHeader({ title, action, onAction }: { title: string; action
 }
 
 const styles = StyleSheet.create({
-  btn: { borderRadius: radius.m, paddingVertical: 14, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center' },
+  btn: { borderRadius: radius.m, paddingVertical: 13, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center' },
   btnSmall: { paddingVertical: 9, paddingHorizontal: 8, borderRadius: radius.s },
   btnInner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, maxWidth: '100%' },
-  btnText: { fontSize: 16, fontWeight: '700', textAlign: 'center' },
+  btnText: { fontSize: 15, fontWeight: '700', textAlign: 'center' },
   btnTextSmall: { fontSize: 14, fontWeight: '600' },
   outline: { borderWidth: 1.5, borderColor: colors.text },
   iconBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
