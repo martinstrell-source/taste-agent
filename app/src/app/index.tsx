@@ -1228,7 +1228,7 @@ const styles = StyleSheet.create({
   meta: { fontSize: 14, color: colors.muted },
   note: { fontSize: 14, color: colors.text },
   why: { fontSize: 14, color: colors.pick, fontWeight: '600' },
-  sep: { height: StyleSheet.hairlineWidth, backgroundColor: colors.line, marginLeft: 38 },
+  sep: { height: 1, backgroundColor: '#C9CEC6', marginLeft: 16, marginRight: 16 }, // between places: a full line, a shade darker than the page lines
   empty: { textAlign: 'center', color: colors.muted, marginTop: 24, paddingHorizontal: 24 },
   footer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8, marginTop: 28, padding: 8 },
   undo: {
